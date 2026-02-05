@@ -30,6 +30,11 @@ class CarlaEnvAdapter(EnvInterface):
         retry_attempts: int = 30,
         map_name: str = "Town04",
         spectator_follow: bool = False,
+        no_rendering_mode: bool = False,
+        camera_width: int = 800,
+        camera_height: int = 600,
+        camera_sensor_tick: float | None = None,
+        unload_map_layers: tuple[str, ...] = (),
     ) -> None:
         self._host = host
         self._port = port
@@ -39,6 +44,11 @@ class CarlaEnvAdapter(EnvInterface):
         self._retry_attempts = retry_attempts
         self._map_name = map_name
         self._spectator_follow = spectator_follow
+        self._no_rendering_mode = no_rendering_mode
+        self._camera_width = camera_width
+        self._camera_height = camera_height
+        self._camera_sensor_tick = camera_sensor_tick
+        self._unload_map_layers = unload_map_layers
 
         self._client: carla.Client | None = None
         self._world: carla.World | None = None
@@ -52,6 +62,7 @@ class CarlaEnvAdapter(EnvInterface):
     def reset(self) -> Observation:
         self._ensure_connected()
         self._apply_sync_settings()
+        self._apply_map_layer_overrides()
         self._destroy_actors()
         self._spawn_ego_and_sensors()
 
@@ -131,7 +142,21 @@ class CarlaEnvAdapter(EnvInterface):
         settings = self._world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = self._fixed_dt
+        settings.no_rendering_mode = self._no_rendering_mode
         self._world.apply_settings(settings)
+
+    def _apply_map_layer_overrides(self) -> None:
+        if not self._unload_map_layers or self._world is None:
+            return
+
+        for name in self._unload_map_layers:
+            layer = _to_map_layer(name)
+            if layer is None:
+                continue
+            try:
+                self._world.unload_map_layer(layer)
+            except RuntimeError:
+                pass
 
     def _spawn_ego_and_sensors(self) -> None:
         """
@@ -170,6 +195,10 @@ class CarlaEnvAdapter(EnvInterface):
         # 定义相机相对于车辆中心的位置偏置（x=-5.5 米, z=2.8 米）和俯仰角（-15度），
         # 实现类似“车载后上方”的视野。
         camera_bp = blueprint_library.find("sensor.camera.rgb")
+        camera_bp.set_attribute("image_size_x", str(self._camera_width))
+        camera_bp.set_attribute("image_size_y", str(self._camera_height))
+        if self._camera_sensor_tick is not None:
+            camera_bp.set_attribute("sensor_tick", str(self._camera_sensor_tick))
         camera_transform = carla.Transform(
             carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)
         )
@@ -247,3 +276,28 @@ def _to_vehicle_control(cmd: VehicleCommand) -> carla.VehicleControl:
         steer=cmd.steer,
         brake=cmd.brake,
     )
+
+
+def _to_map_layer(name: str) -> carla.MapLayer | None:
+    normalized = name.strip()
+    if not normalized:
+        return None
+    alias_map = {
+        "vegetation": "Foliage",
+        "parkedvehicles": "ParkedVehicles",
+        "streetlights": "StreetLights",
+    }
+    lower = normalized.lower().replace(" ", "").replace("_", "")
+    if lower in alias_map:
+        normalized = alias_map[lower]
+    # Accept either canonical CARLA names or common aliases.
+    candidates = [
+        normalized,
+        normalized.replace(" ", ""),
+        normalized.replace("_", ""),
+        normalized.title().replace(" ", ""),
+    ]
+    for candidate in candidates:
+        if hasattr(carla.MapLayer, candidate):
+            return getattr(carla.MapLayer, candidate)
+    return None
