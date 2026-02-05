@@ -24,10 +24,12 @@ class CarlaEnvAdapter(EnvInterface):
         self,
         host: str = "localhost",
         port: int = 2000,
-        timeout: float = 2.0,
+        timeout: float = 100.0,
         fixed_dt: float = 0.1,
         sensor_timeout: float = 2.0,
-        retry_attempts: int = 3,
+        retry_attempts: int = 30,
+        map_name: str = "Town04",
+        spectator_follow: bool = False,
     ) -> None:
         self._host = host
         self._port = port
@@ -35,6 +37,8 @@ class CarlaEnvAdapter(EnvInterface):
         self._fixed_dt = fixed_dt
         self._sensor_timeout = sensor_timeout
         self._retry_attempts = retry_attempts
+        self._map_name = map_name
+        self._spectator_follow = spectator_follow
 
         self._client: carla.Client | None = None
         self._world: carla.World | None = None
@@ -70,6 +74,8 @@ class CarlaEnvAdapter(EnvInterface):
         control = _to_vehicle_control(cmd.clamped())
         try:
             self._vehicle.apply_control(control)
+            if self._spectator_follow:
+                self._update_spectator(self._vehicle)
             frame = self._world.tick()
             snapshot = self._world.get_snapshot()
             image = self._camera_queue.get_for_frame(frame, self._sensor_timeout)
@@ -99,6 +105,13 @@ class CarlaEnvAdapter(EnvInterface):
                 client = carla.Client(self._host, self._port)
                 client.set_timeout(self._timeout)
                 world = client.get_world()
+                if self._map_name:
+                    current_map = world.get_map().name
+                    current_map_name = current_map.split("/")[-1]
+                    if current_map_name != self._map_name:
+                        client.load_world(self._map_name)
+                        world = client.get_world()
+                        self._original_settings = None
                 self._client = client
                 self._world = world
                 return
@@ -121,30 +134,69 @@ class CarlaEnvAdapter(EnvInterface):
         self._world.apply_settings(settings)
 
     def _spawn_ego_and_sensors(self) -> None:
+        """
+        初始化无人车（Ego Vehicle）及其传感器系统。
+        """
         if self._world is None:
             raise EnvConnectionError("World not available for spawning")
 
+
+        # 蓝图筛选：
+        # 从 CARLA 的蓝图库中筛选出特定的车型（优先选择 tesla.model3，
+        # 如果没有则随机选择任意车辆蓝图）。
         blueprint_library = self._world.get_blueprint_library()
-        vehicle_bp = random.choice(blueprint_library.filter("vehicle.*"))
+        candidates = blueprint_library.filter("vehicle.tesla.model3")
+        if not candidates:
+            candidates = blueprint_library.filter("vehicle.*")
+        vehicle_bp = random.choice(candidates)
+
+        # 位置选择：
+        # 从当前地图的所有合法生成点（Spawn Points）中随机抽取一个位置。
         spawn_points = self._world.get_map().get_spawn_points()
         if not spawn_points:
             raise EnvStepError("No spawn points available on the map")
 
         spawn_point = random.choice(spawn_points)
         vehicle = self._world.spawn_actor(vehicle_bp, spawn_point)
+
+        # 实体创建：
+        # 在选定位置生成车辆，并将其记录在 self._actors 列表中以便后续统一销毁。
         self._actors.append(vehicle)
         self._vehicle = vehicle
+        if self._spectator_follow:
+            self._update_spectator(vehicle)
 
+        # 传感器创建：
+        # 定义相机相对于车辆中心的位置偏置（x=-5.5 米, z=2.8 米）和俯仰角（-15度），
+        # 实现类似“车载后上方”的视野。
         camera_bp = blueprint_library.find("sensor.camera.rgb")
         camera_transform = carla.Transform(
             carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)
         )
+        # 父子绑定：使用 attach_to=vehicle 参数将相机物理挂载在无人车上
         camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=vehicle)
         self._actors.append(camera)
         self._camera = camera
 
         self._camera_queue = SensorQueue()
         camera.listen(self._camera_queue.push)
+
+    def _update_spectator(self, vehicle: carla.Vehicle) -> None:
+        """
+        依据车子的实时未知更新观察者的位置
+        """
+        if self._world is None:
+            return
+
+        spectator = self._world.get_spectator()
+        transform = vehicle.get_transform()
+        backward = transform.get_forward_vector() * -10.0
+        up = carla.Location(z=5.0)
+        location = transform.location + backward + up
+
+        rotation = transform.rotation
+        rotation.pitch = -20.0
+        spectator.set_transform(carla.Transform(location, rotation))
 
     def _destroy_actors(self) -> None:
         for actor in self._actors:
