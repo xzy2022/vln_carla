@@ -6,7 +6,7 @@ from queue import Empty
 
 import numpy as np
 
-import carla
+import carla # type: ignore
 
 from vln_carla.adapters.carla_conversions import (
     lh_to_rh_location,
