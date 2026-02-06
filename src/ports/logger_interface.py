@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol
 
-from vln_carla.domain.entities import Observation
+from domain.entities import Observation
 
 
 class LoggerInterface(Protocol):
@@ -11,3 +11,4 @@ class LoggerInterface(Protocol):
 
     def flush(self) -> None:
         ...
+

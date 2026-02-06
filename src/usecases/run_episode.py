@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from vln_carla.domain.entities import StepResult
-from vln_carla.ports.agent_interface import AgentInterface
-from vln_carla.ports.env_interface import EnvInterface
-from vln_carla.ports.logger_interface import LoggerInterface
+from domain.entities import StepResult
+from ports.agent_interface import AgentInterface
+from ports.env_interface import EnvInterface
+from ports.logger_interface import LoggerInterface
 
 
 class RunEpisodeUseCase:
@@ -41,3 +41,4 @@ class RunEpisodeUseCase:
 
         self._logger.flush()
         return {"total_steps": steps, "total_reward": total_reward}
+

@@ -1,15 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import os
 import subprocess
 import time
 
-from vln_carla.adapters.carla_env_adapter import CarlaEnvAdapter
-from vln_carla.domain.errors import EnvConnectionError, EnvStepError
-from vln_carla.drivers.in_memory_logger import InMemoryLogger
-from vln_carla.drivers.simple_agent import SimpleAgent
-from vln_carla.usecases.run_episode import RunEpisodeUseCase
+from adapters.carla_env_adapter import CarlaEnvAdapter
+from domain.errors import EnvConnectionError, EnvStepError
+from drivers.in_memory_logger import InMemoryLogger
+from drivers.simple_agent import SimpleAgent
+from usecases.run_episode import RunEpisodeUseCase
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -98,3 +98,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

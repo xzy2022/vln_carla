@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import random
 import time
@@ -8,15 +8,15 @@ import numpy as np
 
 import carla # type: ignore
 
-from vln_carla.adapters.carla_conversions import (
+from adapters.carla_conversions import (
     lh_to_rh_location,
     lh_to_rh_rotation,
     lh_to_rh_velocity,
 )
-from vln_carla.adapters.sensor_queue import SensorQueue
-from vln_carla.domain.entities import Observation, StepResult, VehicleCommand, VehicleState
-from vln_carla.domain.errors import EnvConnectionError, EnvStepError
-from vln_carla.ports.env_interface import EnvInterface
+from adapters.sensor_queue import SensorQueue
+from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
+from domain.errors import EnvConnectionError, EnvStepError
+from ports.env_interface import EnvInterface
 
 
 class CarlaEnvAdapter(EnvInterface):
@@ -160,41 +160,32 @@ class CarlaEnvAdapter(EnvInterface):
 
     def _spawn_ego_and_sensors(self) -> None:
         """
-        初始化无人车（Ego Vehicle）及其传感器系统。
-        """
+        鍒濆鍖栨棤浜鸿溅锛圗go Vehicle锛夊強鍏朵紶鎰熷櫒绯荤粺銆?        """
         if self._world is None:
             raise EnvConnectionError("World not available for spawning")
 
 
-        # 蓝图筛选：
-        # 从 CARLA 的蓝图库中筛选出特定的车型（优先选择 tesla.model3，
-        # 如果没有则随机选择任意车辆蓝图）。
-        blueprint_library = self._world.get_blueprint_library()
+        # 钃濆浘绛涢€夛細
+        # 浠?CARLA 鐨勮摑鍥惧簱涓瓫閫夊嚭鐗瑰畾鐨勮溅鍨嬶紙浼樺厛閫夋嫨 tesla.model3锛?        # 濡傛灉娌℃湁鍒欓殢鏈洪€夋嫨浠绘剰杞﹁締钃濆浘锛夈€?        blueprint_library = self._world.get_blueprint_library()
         candidates = blueprint_library.filter("vehicle.tesla.model3")
         if not candidates:
             candidates = blueprint_library.filter("vehicle.*")
         vehicle_bp = random.choice(candidates)
 
-        # 位置选择：
-        # 从当前地图的所有合法生成点（Spawn Points）中随机抽取一个位置。
-        spawn_points = self._world.get_map().get_spawn_points()
+        # 浣嶇疆閫夋嫨锛?        # 浠庡綋鍓嶅湴鍥剧殑鎵€鏈夊悎娉曠敓鎴愮偣锛圫pawn Points锛変腑闅忔満鎶藉彇涓€涓綅缃€?        spawn_points = self._world.get_map().get_spawn_points()
         if not spawn_points:
             raise EnvStepError("No spawn points available on the map")
 
         spawn_point = random.choice(spawn_points)
         vehicle = self._world.spawn_actor(vehicle_bp, spawn_point)
 
-        # 实体创建：
-        # 在选定位置生成车辆，并将其记录在 self._actors 列表中以便后续统一销毁。
-        self._actors.append(vehicle)
+        # 瀹炰綋鍒涘缓锛?        # 鍦ㄩ€夊畾浣嶇疆鐢熸垚杞﹁締锛屽苟灏嗗叾璁板綍鍦?self._actors 鍒楄〃涓互渚垮悗缁粺涓€閿€姣併€?        self._actors.append(vehicle)
         self._vehicle = vehicle
         if self._spectator_follow:
             self._update_spectator(vehicle)
 
-        # 传感器创建：
-        # 定义相机相对于车辆中心的位置偏置（x=-5.5 米, z=2.8 米）和俯仰角（-15度），
-        # 实现类似“车载后上方”的视野。
-        camera_bp = blueprint_library.find("sensor.camera.rgb")
+        # 浼犳劅鍣ㄥ垱寤猴細
+        # 瀹氫箟鐩告満鐩稿浜庤溅杈嗕腑蹇冪殑浣嶇疆鍋忕疆锛坸=-5.5 绫? z=2.8 绫筹級鍜屼刊浠拌锛?15搴︼級锛?        # 瀹炵幇绫讳技鈥滆溅杞藉悗涓婃柟鈥濈殑瑙嗛噹銆?        camera_bp = blueprint_library.find("sensor.camera.rgb")
         camera_bp.set_attribute("image_size_x", str(self._camera_width))
         camera_bp.set_attribute("image_size_y", str(self._camera_height))
         if self._camera_sensor_tick is not None:
@@ -202,7 +193,7 @@ class CarlaEnvAdapter(EnvInterface):
         camera_transform = carla.Transform(
             carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)
         )
-        # 父子绑定：使用 attach_to=vehicle 参数将相机物理挂载在无人车上
+        # 鐖跺瓙缁戝畾锛氫娇鐢?attach_to=vehicle 鍙傛暟灏嗙浉鏈虹墿鐞嗘寕杞藉湪鏃犱汉杞︿笂
         camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=vehicle)
         self._actors.append(camera)
         self._camera = camera
@@ -212,7 +203,7 @@ class CarlaEnvAdapter(EnvInterface):
 
     def _update_spectator(self, vehicle: carla.Vehicle) -> None:
         """
-        依据车子的实时未知更新观察者的位置
+        渚濇嵁杞﹀瓙鐨勫疄鏃舵湭鐭ユ洿鏂拌瀵熻€呯殑浣嶇疆
         """
         if self._world is None:
             return
@@ -301,3 +292,4 @@ def _to_map_layer(name: str) -> carla.MapLayer | None:
         if hasattr(carla.MapLayer, candidate):
             return getattr(carla.MapLayer, candidate)
     return None
+

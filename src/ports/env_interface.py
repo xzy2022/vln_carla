@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol
 
-from vln_carla.domain.entities import Observation, StepResult, VehicleCommand
+from domain.entities import Observation, StepResult, VehicleCommand
 
 
 class EnvInterface(Protocol):
@@ -14,3 +14,4 @@ class EnvInterface(Protocol):
 
     def close(self) -> None:
         ...
+

@@ -1,8 +1,8 @@
-import math
+﻿import math
 
 import numpy as np
 
-from vln_carla.adapters.carla_conversions import (
+from adapters.carla_conversions import (
     lh_to_rh_location,
     lh_to_rh_rotation,
     lh_to_rh_velocity,
@@ -38,3 +38,4 @@ def test_rotation_yaw_sign_flip():
     assert math.isclose(rpy[2], -90.0, abs_tol=1e-4)
     assert math.isclose(rpy[0], 0.0, abs_tol=1e-4)
     assert math.isclose(rpy[1], 0.0, abs_tol=1e-4)
+

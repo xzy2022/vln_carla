@@ -1,5 +1,5 @@
-from vln_carla.domain.entities import Observation, StepResult, VehicleCommand, VehicleState
-from vln_carla.usecases.run_episode import RunEpisodeUseCase
+﻿from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
+from usecases.run_episode import RunEpisodeUseCase
 
 
 class FakeEnv:
@@ -67,3 +67,4 @@ def test_run_episode_stops_on_done():
     assert summary["total_steps"] == 3
     assert summary["total_reward"] == 3.0
     assert len(logger.items) == 3
+

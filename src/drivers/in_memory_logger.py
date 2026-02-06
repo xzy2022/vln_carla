@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from vln_carla.domain.entities import Observation
-from vln_carla.ports.logger_interface import LoggerInterface
+from domain.entities import Observation
+from ports.logger_interface import LoggerInterface
 
 
 class InMemoryLogger(LoggerInterface):
@@ -13,3 +13,4 @@ class InMemoryLogger(LoggerInterface):
 
     def flush(self) -> None:
         return None
+

@@ -1,4 +1,4 @@
-from vln_carla.domain.entities import VehicleCommand
+﻿from domain.entities import VehicleCommand
 
 
 def test_vehicle_command_clamp():
@@ -8,3 +8,4 @@ def test_vehicle_command_clamp():
     assert clamped.throttle == 1.0
     assert clamped.steer == -1.0
     assert clamped.brake == 0.0
+
