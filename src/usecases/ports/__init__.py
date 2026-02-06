@@ -1,0 +1,1 @@
+﻿"""Application-layer port contracts."""

@@ -1,16 +1,6 @@
 ﻿from __future__ import annotations
 
-from domain.entities import Observation
-from ports.logger_interface import LoggerInterface
+# Deprecated compatibility import. Use infrastructure.logging.in_memory_logger instead.
+from infrastructure.logging.in_memory_logger import InMemoryLogger
 
-
-class InMemoryLogger(LoggerInterface):
-    def __init__(self) -> None:
-        self.items: list[Observation] = []
-
-    def save(self, obs: Observation) -> None:
-        self.items.append(obs)
-
-    def flush(self) -> None:
-        return None
-
+__all__ = ["InMemoryLogger"]

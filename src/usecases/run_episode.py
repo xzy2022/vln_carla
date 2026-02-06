@@ -1,9 +1,9 @@
 ﻿from __future__ import annotations
 
 from domain.entities import StepResult
-from ports.agent_interface import AgentInterface
-from ports.env_interface import EnvInterface
-from ports.logger_interface import LoggerInterface
+from usecases.ports.agent_interface import AgentInterface
+from usecases.ports.env_interface import EnvInterface
+from usecases.ports.logger_interface import LoggerInterface
 
 
 class RunEpisodeUseCase:

@@ -1,1 +1,1 @@
-"""Driver layer."""
+"""Deprecated compatibility package. Use app/adapters/infrastructure paths."""

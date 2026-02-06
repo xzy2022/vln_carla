@@ -1,14 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import Protocol
+# Deprecated compatibility import. Use usecases.ports.logger_interface instead.
+from usecases.ports.logger_interface import LoggerInterface
 
-from domain.entities import Observation
-
-
-class LoggerInterface(Protocol):
-    def save(self, obs: Observation) -> None:
-        ...
-
-    def flush(self) -> None:
-        ...
-
+__all__ = ["LoggerInterface"]

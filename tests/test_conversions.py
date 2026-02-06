@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from adapters.carla_conversions import (
+from infrastructure.carla.carla_conversions import (
     lh_to_rh_location,
     lh_to_rh_rotation,
     lh_to_rh_velocity,

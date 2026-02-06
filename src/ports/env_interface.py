@@ -1,17 +1,6 @@
 ﻿from __future__ import annotations
 
-from typing import Protocol
+# Deprecated compatibility import. Use usecases.ports.env_interface instead.
+from usecases.ports.env_interface import EnvInterface
 
-from domain.entities import Observation, StepResult, VehicleCommand
-
-
-class EnvInterface(Protocol):
-    def reset(self) -> Observation:
-        ...
-
-    def step(self, cmd: VehicleCommand) -> StepResult:
-        ...
-
-    def close(self) -> None:
-        ...
-
+__all__ = ["EnvInterface"]

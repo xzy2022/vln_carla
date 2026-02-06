@@ -1,13 +1,6 @@
 ﻿from __future__ import annotations
 
-from domain.entities import Observation, VehicleCommand
-from ports.agent_interface import AgentInterface
+# Deprecated compatibility import. Use adapters.control.simple_agent instead.
+from adapters.control.simple_agent import SimpleAgent
 
-
-class SimpleAgent(AgentInterface):
-    def __init__(self, throttle: float = 0.3) -> None:
-        self._throttle = throttle
-
-    def act(self, obs: Observation) -> VehicleCommand:
-        return VehicleCommand(throttle=self._throttle, steer=0.0, brake=0.0)
-
+__all__ = ["SimpleAgent"]

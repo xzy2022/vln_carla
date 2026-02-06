@@ -1,11 +1,7 @@
 ﻿from __future__ import annotations
 
-from typing import Protocol
+# Deprecated compatibility import. Use usecases.ports.agent_interface instead.
+from usecases.ports.agent_interface import AgentInterface
 
-from domain.entities import Observation, VehicleCommand
-
-
-class AgentInterface(Protocol):
-    def act(self, obs: Observation) -> VehicleCommand:
-        ...
+__all__ = ['AgentInterface']
 

@@ -1,1 +1,1 @@
-"""Ports layer."""
+"""Deprecated compatibility package. Use usecases.ports instead."""
