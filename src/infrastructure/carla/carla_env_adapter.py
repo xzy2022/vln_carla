@@ -1,25 +1,32 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import random
 import time
 from queue import Empty
+from typing import Final
 
+import carla
 import numpy as np
+import numpy.typing as npt
 
-import carla # type: ignore
-
+from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
+from domain.errors import EnvConnectionError, EnvStepError
 from infrastructure.carla.carla_conversions import (
     lh_to_rh_location,
     lh_to_rh_rotation,
     lh_to_rh_velocity,
 )
 from infrastructure.carla.sensor_queue import SensorQueue
-from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
-from domain.errors import EnvConnectionError, EnvStepError
 from usecases.ports.env_interface import EnvInterface
 
 
 class CarlaEnvAdapter(EnvInterface):
+    _MAP_LAYER_ALIASES: Final[dict[str, str]] = {
+        "vegetation": "foliage",
+        "parkedvehicles": "parkedvehicles",
+        "streetlights": "streetlights",
+    }
+
     def __init__(
         self,
         host: str = "localhost",
@@ -57,39 +64,39 @@ class CarlaEnvAdapter(EnvInterface):
         self._actors: list[carla.Actor] = []
         self._vehicle: carla.Vehicle | None = None
         self._camera: carla.Sensor | None = None
-        self._camera_queue: SensorQueue | None = None
+        self._camera_queue: SensorQueue[carla.Image] | None = None
 
     def reset(self) -> Observation:
-        self._ensure_connected()
-        self._apply_sync_settings()
-        self._apply_map_layer_overrides()
+        world = self._ensure_connected_world()
+        self._apply_sync_settings(world)
+        self._apply_map_layer_overrides(world)
         self._destroy_actors()
-        self._spawn_ego_and_sensors()
+        self._spawn_ego_and_sensors(world)
 
         try:
-            frame = self._world.tick()
-            snapshot = self._world.get_snapshot()
-            image = self._camera_queue.get_for_frame(frame, self._sensor_timeout)
+            frame = world.tick()
+            snapshot = world.get_snapshot()
+            image = self._require_camera_queue().get_for_frame(frame, self._sensor_timeout)
         except Empty as exc:
             raise EnvStepError("Sensor frame timeout on reset") from exc
         except RuntimeError as exc:
             raise EnvStepError("CARLA tick failed during reset") from exc
 
-        obs = self._build_observation(snapshot, image)
-        return obs
+        return self._build_observation(snapshot, image)
 
     def step(self, cmd: VehicleCommand) -> StepResult:
-        if self._world is None or self._vehicle is None or self._camera_queue is None:
-            raise EnvStepError("Environment not initialized. Call reset() first.")
+        world = self._require_world()
+        vehicle = self._require_vehicle()
+        camera_queue = self._require_camera_queue()
 
         control = _to_vehicle_control(cmd.clamped())
         try:
-            self._vehicle.apply_control(control)
+            vehicle.apply_control(control)
             if self._spectator_follow:
-                self._update_spectator(self._vehicle)
-            frame = self._world.tick()
-            snapshot = self._world.get_snapshot()
-            image = self._camera_queue.get_for_frame(frame, self._sensor_timeout)
+                self._update_spectator(world, vehicle)
+            frame = world.tick()
+            snapshot = world.get_snapshot()
+            image = camera_queue.get_for_frame(frame, self._sensor_timeout)
         except Empty as exc:
             raise EnvStepError("Sensor frame timeout during step") from exc
         except RuntimeError as exc:
@@ -100,15 +107,17 @@ class CarlaEnvAdapter(EnvInterface):
 
     def close(self) -> None:
         self._destroy_actors()
-        if self._world and self._original_settings:
+        world = self._world
+        original_settings = self._original_settings
+        if world is not None and original_settings is not None:
             try:
-                self._world.apply_settings(self._original_settings)
+                world.apply_settings(original_settings)
             except RuntimeError:
                 pass
 
-    def _ensure_connected(self) -> None:
-        if self._client and self._world:
-            return
+    def _ensure_connected_world(self) -> carla.World:
+        if self._world is not None:
+            return self._world
 
         last_error: Exception | None = None
         for attempt in range(self._retry_attempts):
@@ -117,36 +126,47 @@ class CarlaEnvAdapter(EnvInterface):
                 client.set_timeout(self._timeout)
                 world = client.get_world()
                 if self._map_name:
-                    current_map = world.get_map().name
-                    current_map_name = current_map.split("/")[-1]
+                    current_map_name = world.get_map().name.split("/")[-1]
                     if current_map_name != self._map_name:
                         client.load_world(self._map_name)
                         world = client.get_world()
                         self._original_settings = None
                 self._client = client
                 self._world = world
-                return
+                return world
             except (RuntimeError, TimeoutError, OSError) as exc:
                 last_error = exc
                 time.sleep(0.5 * (2**attempt))
 
         raise EnvConnectionError("Failed to connect to CARLA server") from last_error
 
-    def _apply_sync_settings(self) -> None:
+    def _require_world(self) -> carla.World:
         if self._world is None:
-            raise EnvConnectionError("World not available for settings")
+            raise EnvConnectionError("World is not initialized. Call reset() first.")
+        return self._world
 
+    def _require_vehicle(self) -> carla.Vehicle:
+        if self._vehicle is None:
+            raise EnvStepError("Vehicle is not initialized. Call reset() first.")
+        return self._vehicle
+
+    def _require_camera_queue(self) -> SensorQueue[carla.Image]:
+        if self._camera_queue is None:
+            raise EnvStepError("Camera queue is not initialized. Call reset() first.")
+        return self._camera_queue
+
+    def _apply_sync_settings(self, world: carla.World) -> None:
         if self._original_settings is None:
-            self._original_settings = self._world.get_settings()
+            self._original_settings = world.get_settings()
 
-        settings = self._world.get_settings()
+        settings = world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = self._fixed_dt
         settings.no_rendering_mode = self._no_rendering_mode
-        self._world.apply_settings(settings)
+        world.apply_settings(settings)
 
-    def _apply_map_layer_overrides(self) -> None:
-        if not self._unload_map_layers or self._world is None:
+    def _apply_map_layer_overrides(self, world: carla.World) -> None:
+        if not self._unload_map_layers:
             return
 
         for name in self._unload_map_layers:
@@ -154,61 +174,49 @@ class CarlaEnvAdapter(EnvInterface):
             if layer is None:
                 continue
             try:
-                self._world.unload_map_layer(layer)
+                world.unload_map_layer(layer)
             except RuntimeError:
                 pass
 
-    def _spawn_ego_and_sensors(self) -> None:
-        """
-        鍒濆鍖栨棤浜鸿溅锛圗go Vehicle锛夊強鍏朵紶鎰熷櫒绯荤粺銆?        """
-        if self._world is None:
-            raise EnvConnectionError("World not available for spawning")
-
-
-        # 钃濆浘绛涢€夛細
-        # 浠?CARLA 鐨勮摑鍥惧簱涓瓫閫夊嚭鐗瑰畾鐨勮溅鍨嬶紙浼樺厛閫夋嫨 tesla.model3锛?        # 濡傛灉娌℃湁鍒欓殢鏈洪€夋嫨浠绘剰杞﹁締钃濆浘锛夈€?        blueprint_library = self._world.get_blueprint_library()
+    def _spawn_ego_and_sensors(self, world: carla.World) -> None:
+        blueprint_library = world.get_blueprint_library()
         candidates = blueprint_library.filter("vehicle.tesla.model3")
         if not candidates:
             candidates = blueprint_library.filter("vehicle.*")
         vehicle_bp = random.choice(candidates)
 
-        # 浣嶇疆閫夋嫨锛?        # 浠庡綋鍓嶅湴鍥剧殑鎵€鏈夊悎娉曠敓鎴愮偣锛圫pawn Points锛変腑闅忔満鎶藉彇涓€涓綅缃€?        spawn_points = self._world.get_map().get_spawn_points()
+        spawn_points = world.get_map().get_spawn_points()
         if not spawn_points:
             raise EnvStepError("No spawn points available on the map")
 
         spawn_point = random.choice(spawn_points)
-        vehicle = self._world.spawn_actor(vehicle_bp, spawn_point)
+        vehicle_actor = world.spawn_actor(vehicle_bp, spawn_point)
+        if not isinstance(vehicle_actor, carla.Vehicle):
+            raise EnvStepError("Spawned ego actor is not a vehicle")
 
-        # 瀹炰綋鍒涘缓锛?        # 鍦ㄩ€夊畾浣嶇疆鐢熸垚杞﹁締锛屽苟灏嗗叾璁板綍鍦?self._actors 鍒楄〃涓互渚垮悗缁粺涓€閿€姣併€?        self._actors.append(vehicle)
-        self._vehicle = vehicle
+        self._actors.append(vehicle_actor)
+        self._vehicle = vehicle_actor
         if self._spectator_follow:
-            self._update_spectator(vehicle)
+            self._update_spectator(world, vehicle_actor)
 
-        # 浼犳劅鍣ㄥ垱寤猴細
-        # 瀹氫箟鐩告満鐩稿浜庤溅杈嗕腑蹇冪殑浣嶇疆鍋忕疆锛坸=-5.5 绫? z=2.8 绫筹級鍜屼刊浠拌锛?15搴︼級锛?        # 瀹炵幇绫讳技鈥滆溅杞藉悗涓婃柟鈥濈殑瑙嗛噹銆?        camera_bp = blueprint_library.find("sensor.camera.rgb")
+        camera_bp = blueprint_library.find("sensor.camera.rgb")
         camera_bp.set_attribute("image_size_x", str(self._camera_width))
         camera_bp.set_attribute("image_size_y", str(self._camera_height))
         if self._camera_sensor_tick is not None:
             camera_bp.set_attribute("sensor_tick", str(self._camera_sensor_tick))
-        camera_transform = carla.Transform(
-            carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)
-        )
-        # 鐖跺瓙缁戝畾锛氫娇鐢?attach_to=vehicle 鍙傛暟灏嗙浉鏈虹墿鐞嗘寕杞藉湪鏃犱汉杞︿笂
-        camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=vehicle)
-        self._actors.append(camera)
-        self._camera = camera
+        camera_transform = carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15.0))
+        camera_actor = world.spawn_actor(camera_bp, camera_transform, attach_to=vehicle_actor)
+        if not isinstance(camera_actor, carla.Sensor):
+            raise EnvStepError("Spawned camera actor is not a sensor")
 
-        self._camera_queue = SensorQueue()
-        camera.listen(self._camera_queue.push)
+        self._actors.append(camera_actor)
+        self._camera = camera_actor
 
-    def _update_spectator(self, vehicle: carla.Vehicle) -> None:
-        """
-        渚濇嵁杞﹀瓙鐨勫疄鏃舵湭鐭ユ洿鏂拌瀵熻€呯殑浣嶇疆
-        """
-        if self._world is None:
-            return
+        self._camera_queue = SensorQueue[carla.Image]()
+        camera_actor.listen(self._camera_queue.push)
 
-        spectator = self._world.get_spectator()
+    def _update_spectator(self, world: carla.World, vehicle: carla.Vehicle) -> None:
+        spectator = world.get_spectator()
         transform = vehicle.get_transform()
         backward = transform.get_forward_vector() * -10.0
         up = carla.Location(z=5.0)
@@ -226,18 +234,18 @@ class CarlaEnvAdapter(EnvInterface):
                 actor.destroy()
             except RuntimeError:
                 pass
+
         self._actors = []
         self._vehicle = None
         self._camera = None
         self._camera_queue = None
 
     def _build_observation(self, snapshot: carla.WorldSnapshot, image: carla.Image) -> Observation:
-        if self._vehicle is None:
-            raise EnvStepError("Vehicle not available for observation")
+        vehicle = self._require_vehicle()
 
         rgb = _image_to_rgb_array(image)
-        transform = self._vehicle.get_transform()
-        velocity = self._vehicle.get_velocity()
+        transform = vehicle.get_transform()
+        velocity = vehicle.get_velocity()
 
         state = VehicleState(
             position=lh_to_rh_location(transform.location),
@@ -253,12 +261,12 @@ class CarlaEnvAdapter(EnvInterface):
         )
 
 
-def _image_to_rgb_array(image: carla.Image) -> np.ndarray:
-    array = np.frombuffer(image.raw_data, dtype=np.uint8)
-    array = array.reshape((image.height, image.width, 4))
-    array = array[:, :, :3]
-    array = array[:, :, ::-1]
-    return array
+def _image_to_rgb_array(image: carla.Image) -> npt.NDArray[np.uint8]:
+    bgra: npt.NDArray[np.uint8] = np.frombuffer(image.raw_data, dtype=np.uint8)
+    reshaped: npt.NDArray[np.uint8] = bgra.reshape((image.height, image.width, 4))
+    bgr: npt.NDArray[np.uint8] = reshaped[:, :, :3]
+    rgb: npt.NDArray[np.uint8] = bgr[:, :, ::-1]
+    return rgb
 
 
 def _to_vehicle_control(cmd: VehicleCommand) -> carla.VehicleControl:
@@ -270,26 +278,31 @@ def _to_vehicle_control(cmd: VehicleCommand) -> carla.VehicleControl:
 
 
 def _to_map_layer(name: str) -> carla.MapLayer | None:
-    normalized = name.strip()
+    normalized = name.strip().lower().replace(" ", "").replace("_", "")
     if not normalized:
         return None
-    alias_map = {
-        "vegetation": "Foliage",
-        "parkedvehicles": "ParkedVehicles",
-        "streetlights": "StreetLights",
-    }
-    lower = normalized.lower().replace(" ", "").replace("_", "")
-    if lower in alias_map:
-        normalized = alias_map[lower]
-    # Accept either canonical CARLA names or common aliases.
-    candidates = [
-        normalized,
-        normalized.replace(" ", ""),
-        normalized.replace("_", ""),
-        normalized.title().replace(" ", ""),
-    ]
-    for candidate in candidates:
-        if hasattr(carla.MapLayer, candidate):
-            return getattr(carla.MapLayer, candidate)
-    return None
 
+    normalized = CarlaEnvAdapter._MAP_LAYER_ALIASES.get(normalized, normalized)
+
+    if normalized == "buildings":
+        return carla.MapLayer.Buildings
+    if normalized == "decals":
+        return carla.MapLayer.Decals
+    if normalized == "foliage":
+        return carla.MapLayer.Foliage
+    if normalized == "ground":
+        return carla.MapLayer.Ground
+    if normalized == "parkedvehicles":
+        return carla.MapLayer.ParkedVehicles
+    if normalized == "particles":
+        return carla.MapLayer.Particles
+    if normalized == "props":
+        return carla.MapLayer.Props
+    if normalized == "streetlights":
+        return carla.MapLayer.StreetLights
+    if normalized == "walls":
+        return carla.MapLayer.Walls
+    if normalized == "all":
+        return carla.MapLayer.All
+
+    return None

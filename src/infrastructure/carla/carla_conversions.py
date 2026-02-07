@@ -1,24 +1,37 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Protocol, TypeAlias
 
 import numpy as np
+import numpy.typing as npt
+
+Float32Array: TypeAlias = npt.NDArray[np.float32]
+Float64Array: TypeAlias = npt.NDArray[np.float64]
 
 
-def lh_to_rh_location(location: Any) -> np.ndarray:
+class SupportsXYZ(Protocol):
+    x: float
+    y: float
+    z: float
+
+
+class SupportsRPY(Protocol):
+    roll: float
+    pitch: float
+    yaw: float
+
+
+def lh_to_rh_location(location: SupportsXYZ) -> Float32Array:
     return np.array([location.x, -location.y, location.z], dtype=np.float32)
 
 
-def lh_to_rh_velocity(velocity: Any) -> np.ndarray:
+def lh_to_rh_velocity(velocity: SupportsXYZ) -> Float32Array:
     return np.array([velocity.x, -velocity.y, velocity.z], dtype=np.float32)
 
 
-def lh_to_rh_rotation(rotation: Any) -> np.ndarray:
-    """
-    Convert CARLA left-handed rotation (roll, pitch, yaw in degrees)
-    to right-handed rotation (roll, pitch, yaw in degrees) by reflection.
-    """
+def lh_to_rh_rotation(rotation: SupportsRPY) -> Float32Array:
+    """Convert CARLA left-handed RPY degrees into right-handed RPY degrees."""
     roll = math.radians(rotation.roll)
     pitch = math.radians(rotation.pitch)
     yaw = math.radians(rotation.yaw)
@@ -34,7 +47,7 @@ def lh_to_rh_rotation(rotation: Any) -> np.ndarray:
     )
 
 
-def _euler_zyx_to_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
+def _euler_zyx_to_matrix(yaw: float, pitch: float, roll: float) -> Float64Array:
     cy = math.cos(yaw)
     sy = math.sin(yaw)
     cp = math.cos(pitch)
@@ -52,7 +65,7 @@ def _euler_zyx_to_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
     )
 
 
-def _matrix_to_euler_zyx(r: np.ndarray) -> tuple[float, float, float]:
+def _matrix_to_euler_zyx(r: Float64Array) -> tuple[float, float, float]:
     r20 = float(r[2, 0])
     if r20 <= -1.0:
         pitch = math.pi / 2.0
@@ -63,9 +76,9 @@ def _matrix_to_euler_zyx(r: np.ndarray) -> tuple[float, float, float]:
 
     if abs(math.cos(pitch)) < 1e-6:
         yaw = 0.0
-        roll = math.atan2(-r[0, 1], r[1, 1])
+        roll = math.atan2(-float(r[0, 1]), float(r[1, 1]))
     else:
-        yaw = math.atan2(r[1, 0], r[0, 0])
-        roll = math.atan2(r[2, 1], r[2, 2])
+        yaw = math.atan2(float(r[1, 0]), float(r[0, 0]))
+        roll = math.atan2(float(r[2, 1]), float(r[2, 2]))
 
     return yaw, pitch, roll

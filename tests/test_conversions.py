@@ -1,4 +1,6 @@
-﻿import math
+from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -23,7 +25,7 @@ class DummyRot:
         self.yaw = yaw
 
 
-def test_location_velocity_flip_y():
+def test_location_velocity_flip_y() -> None:
     loc = DummyVec(1.0, 2.0, 3.0)
     vel = DummyVec(-1.0, -2.0, -3.0)
 
@@ -31,11 +33,10 @@ def test_location_velocity_flip_y():
     assert np.allclose(lh_to_rh_velocity(vel), [-1.0, 2.0, -3.0])
 
 
-def test_rotation_yaw_sign_flip():
+def test_rotation_yaw_sign_flip() -> None:
     rot = DummyRot(roll=0.0, pitch=0.0, yaw=90.0)
     rpy = lh_to_rh_rotation(rot)
 
-    assert math.isclose(rpy[2], -90.0, abs_tol=1e-4)
-    assert math.isclose(rpy[0], 0.0, abs_tol=1e-4)
-    assert math.isclose(rpy[1], 0.0, abs_tol=1e-4)
-
+    assert math.isclose(float(rpy[2]), -90.0, abs_tol=1e-4)
+    assert math.isclose(float(rpy[0]), 0.0, abs_tol=1e-4)
+    assert math.isclose(float(rpy[1]), 0.0, abs_tol=1e-4)

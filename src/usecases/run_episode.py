@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from domain.entities import StepResult
+from usecases.dtos import EpisodeSummary
 from usecases.ports.agent_interface import AgentInterface
 from usecases.ports.env_interface import EnvInterface
 from usecases.ports.logger_interface import LoggerInterface
+from usecases.ports.run_episode_input_port import RunEpisodeInputPort
 
 
-class RunEpisodeUseCase:
+class RunEpisodeUseCase(RunEpisodeInputPort):
     def __init__(
         self,
         env: EnvInterface,
@@ -23,7 +25,7 @@ class RunEpisodeUseCase:
         self._max_steps = max_steps
         self._should_stop = should_stop
 
-    def run(self) -> dict:
+    def run(self) -> EpisodeSummary:
         obs = self._env.reset()
         total_reward = 0.0
         steps = 0
@@ -47,4 +49,4 @@ class RunEpisodeUseCase:
                 break
 
         self._logger.flush()
-        return {"total_steps": steps, "total_reward": total_reward}
+        return EpisodeSummary(total_steps=steps, total_reward=total_reward)

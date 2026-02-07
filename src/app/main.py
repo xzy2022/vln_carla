@@ -6,7 +6,9 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Sequence
 from importlib import metadata
+from typing import Literal
 
 from adapters.control.simple_agent import SimpleAgent
 from domain.errors import EnvConnectionError, EnvStepError
@@ -14,7 +16,10 @@ from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 from infrastructure.logging.in_memory_logger import InMemoryLogger
 from usecases.run_episode import RunEpisodeUseCase
 
-DEFAULT_CARLA_EXECUTABLES = {
+CarlaVersion = Literal["ue4", "ue5", "auto"]
+QualityLevel = Literal["Epic", "Low"]
+
+DEFAULT_CARLA_EXECUTABLES: dict[str, str] = {
     "ue4": r"D:\Workspace\02_Playground\CARLA_Latest\CarlaUE4.exe",
     "ue5": r"D:\Workspace\02_Playground\Carla-0.10.0-Win64-Shipping\CarlaUnreal.exe",
 }
@@ -22,57 +27,34 @@ DEFAULT_CARLA_EXECUTABLES = {
 ANSI_YELLOW_BOLD = "\033[1;33m"
 ANSI_RESET = "\033[0m"
 
-_MANAGED_PROCESSES: list[subprocess.Popen] = []
-_WINDOWS_JOB_HANDLE = None
+_MANAGED_PROCESSES: list[subprocess.Popen[bytes]] = []
 
-if os.name == "nt":
-    import ctypes
-    from ctypes import wintypes
-
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
-
-    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_longlong),
-            ("PerJobUserTimeLimit", ctypes.c_longlong),
-            ("LimitFlags", wintypes.DWORD),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", wintypes.DWORD),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", wintypes.DWORD),
-            ("SchedulingClass", wintypes.DWORD),
-        ]
-
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [
-            ("ReadOperationCount", ctypes.c_ulonglong),
-            ("WriteOperationCount", ctypes.c_ulonglong),
-            ("OtherOperationCount", ctypes.c_ulonglong),
-            ("ReadTransferCount", ctypes.c_ulonglong),
-            ("WriteTransferCount", ctypes.c_ulonglong),
-            ("OtherTransferCount", ctypes.c_ulonglong),
-        ]
-
-    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-            ("IoInfo", IO_COUNTERS),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
+class CliArgs(argparse.Namespace):
+    host: str
+    port: int
+    timeout: float
+    fixed_dt: float
+    sensor_timeout: float
+    max_steps: int
+    throttle: float
+    carla_version: CarlaVersion
+    carla_path: str | None
+    no_launch_server: bool
+    quality_level: QualityLevel | None
+    map: str
+    spectator_follow: bool
+    no_rendering: bool
+    camera_width: int
+    camera_height: int
+    camera_sensor_tick: float | None
+    unload_map_layers: str
 
 
 def _terminal_supports_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
     term = (os.environ.get("TERM") or "").lower()
-    if term == "dumb":
-        return False
-    return True
+    return term != "dumb"
 
 
 def _warn(message: str) -> None:
@@ -82,7 +64,7 @@ def _warn(message: str) -> None:
     print(f"[warn] {message}")
 
 
-def _terminate_process(proc: subprocess.Popen) -> None:
+def _terminate_process(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
     try:
@@ -95,72 +77,16 @@ def _terminate_process(proc: subprocess.Popen) -> None:
 
 
 def _cleanup_managed_processes() -> None:
-    global _WINDOWS_JOB_HANDLE
-
     for proc in list(reversed(_MANAGED_PROCESSES)):
         _terminate_process(proc)
     _MANAGED_PROCESSES.clear()
 
-    if os.name == "nt" and _WINDOWS_JOB_HANDLE is not None:
-        try:
-            ctypes.windll.kernel32.CloseHandle(_WINDOWS_JOB_HANDLE)
-        except Exception:
-            pass
-        _WINDOWS_JOB_HANDLE = None
 
-
-def _ensure_windows_job_object():
-    global _WINDOWS_JOB_HANDLE
-    if os.name != "nt":
-        return None
-    if _WINDOWS_JOB_HANDLE is not None:
-        return _WINDOWS_JOB_HANDLE
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    job_handle = kernel32.CreateJobObjectW(None, None)
-    if not job_handle:
-        _warn(f"Failed to create Windows Job Object (error={ctypes.get_last_error()}).")
-        return None
-
-    limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    ok = kernel32.SetInformationJobObject(
-        job_handle,
-        JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-        ctypes.byref(limit_info),
-        ctypes.sizeof(limit_info),
-    )
-    if not ok:
-        _warn(f"Failed to configure Windows Job Object (error={ctypes.get_last_error()}).")
-        kernel32.CloseHandle(job_handle)
-        return None
-
-    _WINDOWS_JOB_HANDLE = job_handle
-    return _WINDOWS_JOB_HANDLE
-
-
-def _register_managed_process(proc: subprocess.Popen) -> None:
+def _register_managed_process(proc: subprocess.Popen[bytes]) -> None:
     _MANAGED_PROCESSES.append(proc)
 
-    if os.name != "nt":
-        return
 
-    job_handle = _ensure_windows_job_object()
-    if job_handle is None:
-        return
-
-    process_handle = getattr(proc, "_handle", None)
-    if process_handle is None:
-        _warn("Could not get child process handle for lifecycle binding.")
-        return
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    assigned = kernel32.AssignProcessToJobObject(job_handle, process_handle)
-    if not assigned:
-        _warn(f"Failed to bind CARLA process lifecycle (error={ctypes.get_last_error()}).")
-
-
-def _unregister_managed_process(proc: subprocess.Popen) -> None:
+def _unregister_managed_process(proc: subprocess.Popen[bytes]) -> None:
     if proc in _MANAGED_PROCESSES:
         _MANAGED_PROCESSES.remove(proc)
 
@@ -192,25 +118,55 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not launch CARLA executable; connect to an already running server.",
     )
-    parser.add_argument("--quality-level", type=str, choices=["Epic", "Low"], default=None, help="Server render quality (only if we launch CARLA)")
+    parser.add_argument(
+        "--quality-level",
+        type=str,
+        choices=["Epic", "Low"],
+        default=None,
+        help="Server render quality (only if we launch CARLA)",
+    )
     parser.add_argument("--map", type=str, default="Town04", help="Map to load")
     parser.add_argument("--spectator-follow", action="store_true", help="Follow ego with spectator")
-    parser.add_argument("--no-rendering", action="store_true", help="Disable rendering (GPU sensors return empty data)")
+    parser.add_argument(
+        "--no-rendering",
+        action="store_true",
+        help="Disable rendering (GPU sensors return empty data)",
+    )
     parser.add_argument("--camera-width", type=int, default=800)
     parser.add_argument("--camera-height", type=int, default=600)
-    parser.add_argument("--camera-sensor-tick", type=float, default=None, help="Seconds between camera captures (e.g. 0.2 for 5Hz)")
-    parser.add_argument("--unload-map-layers", type=str, default="", help="Comma-separated map layers to unload (e.g. Buildings,Vegetation,ParkedVehicles)")
+    parser.add_argument(
+        "--camera-sensor-tick",
+        type=float,
+        default=None,
+        help="Seconds between camera captures (e.g. 0.2 for 5Hz)",
+    )
+    parser.add_argument(
+        "--unload-map-layers",
+        type=str,
+        default="",
+        help="Comma-separated map layers to unload (e.g. Buildings,Vegetation,ParkedVehicles)",
+    )
     return parser
 
 
-def _resolve_carla_executable(carla_version: str, explicit_path: str | None) -> tuple[str | None, str]:
+def parse_args(argv: Sequence[str] | None = None) -> CliArgs:
+    parser = build_arg_parser()
+    namespace = CliArgs()
+    parsed = parser.parse_args(args=list(argv) if argv is not None else None, namespace=namespace)
+    return parsed
+
+
+def _resolve_carla_executable(
+    carla_version: CarlaVersion,
+    explicit_path: str | None,
+) -> tuple[str | None, str]:
     if explicit_path:
         return explicit_path, "custom"
 
     if carla_version in ("ue4", "ue5"):
         return DEFAULT_CARLA_EXECUTABLES[carla_version], carla_version
 
-    # auto: keep previous behavior preference (UE4 first), fallback to UE5.
+    # auto: prefer UE4 first, then fallback to UE5.
     for candidate_version in ("ue4", "ue5"):
         candidate_path = DEFAULT_CARLA_EXECUTABLES[candidate_version]
         if os.path.isfile(candidate_path):
@@ -228,12 +184,12 @@ def _detect_python_carla_version() -> str | None:
             break
 
     try:
-        import carla  # type: ignore
+        carla_module = __import__("carla")
     except Exception:
         return None
 
     for attr in ("__version__", "version", "VERSION"):
-        value = getattr(carla, attr, None)
+        value = getattr(carla_module, attr, None)
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "unknown"
@@ -289,9 +245,9 @@ def _warn_if_python_env_mismatch(target_flavor: str | None) -> None:
 def _ensure_carla_server(
     carla_exe: str | None,
     port: int,
-    quality_level: str | None,
+    quality_level: QualityLevel | None,
     resolved_version: str,
-) -> subprocess.Popen | None:
+) -> subprocess.Popen[bytes] | None:
     if not carla_exe:
         return None
 
@@ -301,7 +257,7 @@ def _ensure_carla_server(
 
     print(f"Starting CARLA server ({resolved_version}) on port {port}...")
     args = [carla_exe, f"-carla-rpc-port={port}"]
-    if quality_level:
+    if quality_level is not None:
         args.append(f"-quality-level={quality_level}")
 
     server = subprocess.Popen(
@@ -313,20 +269,25 @@ def _ensure_carla_server(
     return server
 
 
-def main() -> int:
-    args = build_arg_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
 
     resolved_exe, resolved_version = _resolve_carla_executable(args.carla_version, args.carla_path)
     validation_target = args.carla_version if args.carla_version in ("ue4", "ue5") else resolved_version
     _warn_if_python_env_mismatch(validation_target)
 
-    server_process: subprocess.Popen | None = None
+    server_process: subprocess.Popen[bytes] | None = None
     if args.no_launch_server:
         print(f"Skipping CARLA launch; connecting to running server at {args.host}:{args.port}.")
     else:
-        server_process = _ensure_carla_server(resolved_exe, args.port, args.quality_level, resolved_version)
+        server_process = _ensure_carla_server(
+            resolved_exe,
+            args.port,
+            args.quality_level,
+            resolved_version,
+        )
 
-    if server_process:
+    if server_process is not None:
         print("Waiting for CARLA server to initialize...")
         time.sleep(10)
 
@@ -346,7 +307,12 @@ def main() -> int:
         server_exited_early = True
         return True
 
-    unload_layers = tuple(filter(None, (s.strip() for s in args.unload_map_layers.split(","))))
+    unload_layers: tuple[str, ...] = tuple(
+        layer
+        for layer in (segment.strip() for segment in args.unload_map_layers.split(","))
+        if layer
+    )
+
     env = CarlaEnvAdapter(
         host=args.host,
         port=args.port,
@@ -375,7 +341,7 @@ def main() -> int:
         summary = usecase.run()
         if server_exited_early:
             return 1
-        print(f"Episode finished: steps={summary['total_steps']} reward={summary['total_reward']:.3f}")
+        print(f"Episode finished: steps={summary.total_steps} reward={summary.total_reward:.3f}")
     except (EnvConnectionError, EnvStepError) as exc:
         print(f"[error] {exc}")
         return 1

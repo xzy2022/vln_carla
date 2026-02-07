@@ -1,0 +1,31 @@
+{
+  "include": [
+    "src",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".pytest_cache",
+    "pytest-cache-files-*",
+    "PythonAPI_Carla_UE4",
+    "PythonAPI_Carla_UE5",
+    "Docs_Carla_UE4",
+    "Docs_Carla_UE5",
+    "demo",
+    "docs"
+  ],
+  "stubPath": "typings",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "strict",
+  "executionEnvironments": [
+    {
+      "root": "src"
+    },
+    {
+      "root": "tests",
+      "extraPaths": [
+        "src"
+      ]
+    }
+  ]
+}
