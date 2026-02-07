@@ -15,8 +15,11 @@ from usecases.run_episode import RunEpisodeUseCase
 
 DEFAULT_CARLA_EXECUTABLES = {
     "ue4": r"D:\Workspace\02_Playground\CARLA_Latest\CarlaUE4.exe",
-    "ue5": r"D:\Workspace\02_Playground\Carla-0.10.0-Win64-Shipping\Carla-0.10.0-Win64-Shipping\CarlaUnreal.exe",
+    "ue5": r"D:\Workspace\02_Playground\Carla-0.10.0-Win64-Shipping\CarlaUnreal.exe",
 }
+
+ANSI_YELLOW_BOLD = "\033[1;33m"
+ANSI_RESET = "\033[0m"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -93,6 +96,22 @@ def _detect_python_carla_version() -> str | None:
     return "unknown"
 
 
+def _terminal_supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    term = (os.environ.get("TERM") or "").lower()
+    if term == "dumb":
+        return False
+    return True
+
+
+def _warn(message: str) -> None:
+    if _terminal_supports_color():
+        print(f"{ANSI_YELLOW_BOLD}[warn]{ANSI_RESET} {message}")
+        return
+    print(f"[warn] {message}")
+
+
 def _classify_python_carla_flavor(version: str | None) -> str | None:
     if version is None:
         return None
@@ -121,22 +140,22 @@ def _warn_if_python_env_mismatch(target_flavor: str | None) -> None:
     package_flavor = _classify_python_carla_flavor(package_version)
 
     if package_version is None:
-        print(
-            f"[warn] Python env '{env_name}' has no CARLA package, expected {target_flavor} package before startup."
+        _warn(
+            f"Python env '{env_name}' has no CARLA package, expected {target_flavor} package before startup."
         )
         return
 
     if package_flavor == "unknown":
-        print(
-            f"[warn] Python env '{env_name}' CARLA package version '{package_version}' cannot be classified; "
+        _warn(
+            f"Python env '{env_name}' CARLA package version '{package_version}' cannot be classified; "
             f"expected {target_flavor}."
         )
         return
 
     if package_flavor != target_flavor:
-        print(
-            f"[warn] Python env '{env_name}' CARLA package version '{package_version}' looks like {package_flavor}, "
-            f"but startup target is {target_flavor}."
+        _warn(
+            f"Python env '{env_name}' CARLA package version '{package_version}' does not match startup target "
+            f"'{target_flavor}'."
         )
 
 
@@ -150,7 +169,7 @@ def _ensure_carla_server(
         return None
 
     if not os.path.isfile(carla_exe):
-        print(f"[warn] CARLA executable not found ({resolved_version}): {carla_exe}")
+        _warn(f"CARLA executable not found ({resolved_version}): {carla_exe}")
         return None
 
     print(f"Starting CARLA server ({resolved_version}) on port {port}...")
@@ -182,7 +201,7 @@ def main() -> int:
         time.sleep(10)
 
     if args.no_rendering:
-        print("[warn] --no-rendering will disable GPU sensors (camera frames will be empty).")
+        _warn("--no-rendering will disable GPU sensors (camera frames will be empty).")
 
     unload_layers = tuple(filter(None, (s.strip() for s in args.unload_map_layers.split(","))))
     env = CarlaEnvAdapter(
