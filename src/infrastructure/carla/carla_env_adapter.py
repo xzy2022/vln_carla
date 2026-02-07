@@ -19,14 +19,14 @@ from infrastructure.carla.carla_conversions import (
 from infrastructure.carla.sensor_queue import SensorQueue
 from usecases.ports.env_interface import EnvInterface
 
+MAP_LAYER_ALIASES: Final[dict[str, str]] = {
+    "vegetation": "foliage",
+    "parkedvehicles": "parkedvehicles",
+    "streetlights": "streetlights",
+}
+
 
 class CarlaEnvAdapter(EnvInterface):
-    _MAP_LAYER_ALIASES: Final[dict[str, str]] = {
-        "vegetation": "foliage",
-        "parkedvehicles": "parkedvehicles",
-        "streetlights": "streetlights",
-    }
-
     def __init__(
         self,
         host: str = "localhost",
@@ -282,7 +282,7 @@ def _to_map_layer(name: str) -> carla.MapLayer | None:
     if not normalized:
         return None
 
-    normalized = CarlaEnvAdapter._MAP_LAYER_ALIASES.get(normalized, normalized)
+    normalized = MAP_LAYER_ALIASES.get(normalized, normalized)
 
     if normalized == "buildings":
         return carla.MapLayer.Buildings
