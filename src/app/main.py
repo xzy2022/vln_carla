@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import re
 import subprocess
@@ -20,6 +21,148 @@ DEFAULT_CARLA_EXECUTABLES = {
 
 ANSI_YELLOW_BOLD = "\033[1;33m"
 ANSI_RESET = "\033[0m"
+
+_MANAGED_PROCESSES: list[subprocess.Popen] = []
+_WINDOWS_JOB_HANDLE = None
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+
+def _terminal_supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    term = (os.environ.get("TERM") or "").lower()
+    if term == "dumb":
+        return False
+    return True
+
+
+def _warn(message: str) -> None:
+    if _terminal_supports_color():
+        print(f"{ANSI_YELLOW_BOLD}[warn]{ANSI_RESET} {message}")
+        return
+    print(f"[warn] {message}")
+
+
+def _terminate_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _cleanup_managed_processes() -> None:
+    global _WINDOWS_JOB_HANDLE
+
+    for proc in list(reversed(_MANAGED_PROCESSES)):
+        _terminate_process(proc)
+    _MANAGED_PROCESSES.clear()
+
+    if os.name == "nt" and _WINDOWS_JOB_HANDLE is not None:
+        try:
+            ctypes.windll.kernel32.CloseHandle(_WINDOWS_JOB_HANDLE)
+        except Exception:
+            pass
+        _WINDOWS_JOB_HANDLE = None
+
+
+def _ensure_windows_job_object():
+    global _WINDOWS_JOB_HANDLE
+    if os.name != "nt":
+        return None
+    if _WINDOWS_JOB_HANDLE is not None:
+        return _WINDOWS_JOB_HANDLE
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    job_handle = kernel32.CreateJobObjectW(None, None)
+    if not job_handle:
+        _warn(f"Failed to create Windows Job Object (error={ctypes.get_last_error()}).")
+        return None
+
+    limit_info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limit_info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = kernel32.SetInformationJobObject(
+        job_handle,
+        JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+        ctypes.byref(limit_info),
+        ctypes.sizeof(limit_info),
+    )
+    if not ok:
+        _warn(f"Failed to configure Windows Job Object (error={ctypes.get_last_error()}).")
+        kernel32.CloseHandle(job_handle)
+        return None
+
+    _WINDOWS_JOB_HANDLE = job_handle
+    return _WINDOWS_JOB_HANDLE
+
+
+def _register_managed_process(proc: subprocess.Popen) -> None:
+    _MANAGED_PROCESSES.append(proc)
+
+    if os.name != "nt":
+        return
+
+    job_handle = _ensure_windows_job_object()
+    if job_handle is None:
+        return
+
+    process_handle = getattr(proc, "_handle", None)
+    if process_handle is None:
+        _warn("Could not get child process handle for lifecycle binding.")
+        return
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    assigned = kernel32.AssignProcessToJobObject(job_handle, process_handle)
+    if not assigned:
+        _warn(f"Failed to bind CARLA process lifecycle (error={ctypes.get_last_error()}).")
+
+
+def _unregister_managed_process(proc: subprocess.Popen) -> None:
+    if proc in _MANAGED_PROCESSES:
+        _MANAGED_PROCESSES.remove(proc)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -96,22 +239,6 @@ def _detect_python_carla_version() -> str | None:
     return "unknown"
 
 
-def _terminal_supports_color() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    term = (os.environ.get("TERM") or "").lower()
-    if term == "dumb":
-        return False
-    return True
-
-
-def _warn(message: str) -> None:
-    if _terminal_supports_color():
-        print(f"{ANSI_YELLOW_BOLD}[warn]{ANSI_RESET} {message}")
-        return
-    print(f"[warn] {message}")
-
-
 def _classify_python_carla_flavor(version: str | None) -> str | None:
     if version is None:
         return None
@@ -176,11 +303,14 @@ def _ensure_carla_server(
     args = [carla_exe, f"-carla-rpc-port={port}"]
     if quality_level:
         args.append(f"-quality-level={quality_level}")
-    return subprocess.Popen(
+
+    server = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
+    _register_managed_process(server)
+    return server
 
 
 def main() -> int:
@@ -203,6 +333,19 @@ def main() -> int:
     if args.no_rendering:
         _warn("--no-rendering will disable GPU sensors (camera frames will be empty).")
 
+    server_exited_early = False
+
+    def _should_stop() -> bool:
+        nonlocal server_exited_early
+        if server_process is None:
+            return False
+        if server_process.poll() is None:
+            return False
+        if not server_exited_early:
+            _warn(f"CARLA server process exited with code {server_process.returncode}; stopping Python runner.")
+        server_exited_early = True
+        return True
+
     unload_layers = tuple(filter(None, (s.strip() for s in args.unload_map_layers.split(","))))
     env = CarlaEnvAdapter(
         host=args.host,
@@ -220,22 +363,33 @@ def main() -> int:
     )
     agent = SimpleAgent(throttle=args.throttle)
     logger = InMemoryLogger()
-    usecase = RunEpisodeUseCase(env=env, agent=agent, logger=logger, max_steps=args.max_steps)
+    usecase = RunEpisodeUseCase(
+        env=env,
+        agent=agent,
+        logger=logger,
+        max_steps=args.max_steps,
+        should_stop=_should_stop,
+    )
 
     try:
         summary = usecase.run()
+        if server_exited_early:
+            return 1
         print(f"Episode finished: steps={summary['total_steps']} reward={summary['total_reward']:.3f}")
     except (EnvConnectionError, EnvStepError) as exc:
         print(f"[error] {exc}")
         return 1
     finally:
         env.close()
-        if server_process:
-            server_process.terminate()
+        if server_process is not None:
+            _terminate_process(server_process)
+            _unregister_managed_process(server_process)
 
     return 0
 
 
+atexit.register(_cleanup_managed_processes)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1,4 +1,4 @@
-﻿from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
+from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
 from usecases.run_episode import RunEpisodeUseCase
 
 
@@ -67,4 +67,23 @@ def test_run_episode_stops_on_done():
     assert summary["total_steps"] == 3
     assert summary["total_reward"] == 3.0
     assert len(logger.items) == 3
+
+
+def test_run_episode_stops_when_should_stop():
+    env = FakeEnv(max_steps=10)
+    agent = FakeAgent()
+    logger = FakeLogger()
+    calls = 0
+
+    def should_stop() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > 2
+
+    usecase = RunEpisodeUseCase(env=env, agent=agent, logger=logger, should_stop=should_stop)
+    summary = usecase.run()
+
+    assert summary["total_steps"] == 2
+    assert summary["total_reward"] == 2.0
+    assert len(logger.items) == 2
 

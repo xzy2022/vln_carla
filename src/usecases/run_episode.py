@@ -1,4 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+from collections.abc import Callable
 
 from domain.entities import StepResult
 from usecases.ports.agent_interface import AgentInterface
@@ -13,11 +15,13 @@ class RunEpisodeUseCase:
         agent: AgentInterface,
         logger: LoggerInterface,
         max_steps: int | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self._env = env
         self._agent = agent
         self._logger = logger
         self._max_steps = max_steps
+        self._should_stop = should_stop
 
     def run(self) -> dict:
         obs = self._env.reset()
@@ -25,6 +29,9 @@ class RunEpisodeUseCase:
         steps = 0
 
         while True:
+            if self._should_stop is not None and self._should_stop():
+                break
+
             if self._max_steps is not None and steps >= self._max_steps:
                 break
 
@@ -41,4 +48,3 @@ class RunEpisodeUseCase:
 
         self._logger.flush()
         return {"total_steps": steps, "total_reward": total_reward}
-
