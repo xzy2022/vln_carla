@@ -25,6 +25,7 @@ python demo/fixed_spectator_axes_spawn.py
 
 作用（UE5）：
 - 连接到正在运行的 CARLA（UE5）并将 `spectator` 固定为俯视朝下。
+- 支持指定目标地图（`Mine_01` / `Town10HD_Opt`），若与当前地图不一致会自动切换并在新地图继续执行。
 - 使用键盘实时移动观察点：方向键控制 XY 平面，`U/O` 控制 Z 高度。
 - 持续在世界原点绘制 UE 坐标轴，并在移动时输出当前坐标。
 
@@ -35,6 +36,7 @@ python demo/spectator_coordinate_navigator.py
 ```
 
 常用参数：
+- `--map`：指定地图，UE5 仅支持 `Mine_01` 与 `Town10HD_Opt`（默认 `Town10HD_Opt`）。
 - `--speed`：各方向移动速度（m/s）。
 - `--tick-hz`：控制循环频率。
 - `--axis-length` / `--axis-z-offset`：坐标轴显示长度与抬升高度。

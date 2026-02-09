@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import time
+from pathlib import PurePosixPath
 
 
 # Windows virtual-key codes
@@ -13,6 +14,8 @@ VK_DOWN = 0x28
 VK_U = 0x55
 VK_O = 0x4F
 VK_ESC = 0x1B
+
+ALLOWED_UE5_MAPS = ("Mine_01", "Town10HD_Opt")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -25,6 +28,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", type=str, default="127.0.0.1", help="CARLA server host.")
     parser.add_argument("--port", type=int, default=2000, help="CARLA server RPC port.")
     parser.add_argument("--timeout", type=float, default=10.0, help="Client timeout seconds.")
+    parser.add_argument(
+        "--map",
+        type=str,
+        choices=ALLOWED_UE5_MAPS,
+        default="Mine_01",
+        help="Target UE5 map. Allowed: Mine_01, Town10HD_Opt.",
+    )
     parser.add_argument("--tick-hz", type=float, default=30.0, help="Control loop frequency.")
     parser.add_argument(
         "--speed",
@@ -63,6 +73,21 @@ def is_pressed(user32: ctypes.WinDLL, vk_code: int) -> bool:
     return bool(user32.GetAsyncKeyState(vk_code) & 0x8000)
 
 
+def short_map_name(map_path: str) -> str:
+    return PurePosixPath(map_path).name
+
+
+def resolve_target_map(requested_short: str, available_maps: list[str]) -> str | None:
+    requested_lower = requested_short.lower()
+    short_matches = [m for m in available_maps if short_map_name(m).lower() == requested_lower]
+    if len(short_matches) == 1:
+        return short_matches[0]
+    exact_matches = [m for m in available_maps if m.lower().strip("/") == requested_lower]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    return None
+
+
 def draw_ue_axes(
     world,
     carla_module,
@@ -71,7 +96,6 @@ def draw_ue_axes(
     axis_z_offset: float,
 ) -> None:
     debug = world.debug
-    origin_raw = carla_module.Location(x=0.0, y=0.0, z=0.0)
     origin = carla_module.Location(x=0.0, y=0.0, z=axis_z_offset)
     x_end = carla_module.Location(x=axis_length, y=0.0, z=axis_z_offset)
     y_end = carla_module.Location(x=0.0, y=axis_length, z=axis_z_offset)
@@ -82,22 +106,9 @@ def draw_ue_axes(
     blue = carla_module.Color(0, 120, 255)
     white = carla_module.Color(255, 255, 255)
 
-    debug.draw_point(origin_raw, size=0.25, color=white, life_time=life_time)
-    debug.draw_string(
-        origin_raw + carla_module.Location(z=0.4),
-        "O(0,0,0)",
-        draw_shadow=True,
-        color=white,
-        life_time=life_time,
-    )
-    debug.draw_arrow(
-        origin_raw,
-        origin,
-        thickness=0.06,
-        arrow_size=0.18,
-        color=white,
-        life_time=life_time,
-    )
+    # Keep the coordinate-axis origin marker only, avoid drawing extra origin marker
+    # at the spectator initialization position to reduce visual obstruction.
+    debug.draw_point(origin, size=0.18, color=white, life_time=life_time)
 
     debug.draw_arrow(origin, x_end, thickness=0.14, arrow_size=0.45, color=red, life_time=life_time)
     debug.draw_arrow(origin, y_end, thickness=0.14, arrow_size=0.45, color=green, life_time=life_time)
@@ -140,6 +151,32 @@ def main() -> int:
     except RuntimeError as exc:
         print(f"[error] failed to connect to CARLA server: {exc}")
         return 1
+
+    current_map = world.get_map().name
+    current_map_short = short_map_name(current_map)
+    available_maps = sorted(client.get_available_maps())
+
+    target_map = resolve_target_map(args.map, available_maps)
+    if target_map is None:
+        print(f"[error] target map '{args.map}' is not available on this server.")
+        print("[info] available maps:")
+        for map_path in available_maps:
+            print(f"       - {map_path}")
+        return 1
+
+    target_map_short = short_map_name(target_map)
+    if current_map_short.lower() != target_map_short.lower():
+        print(f"[info] current map: {current_map}")
+        print(f"[info] switching map to: {target_map}")
+        print("[info] load_world will destroy actors in current world.")
+        try:
+            world = client.load_world(target_map)
+        except RuntimeError as exc:
+            print(f"[error] failed to load target map '{target_map}': {exc}")
+            return 1
+        print(f"[info] switched to map: {world.get_map().name}")
+    else:
+        print(f"[info] current map already matches target: {current_map}")
 
     spectator = world.get_spectator()
     location = carla.Location(x=0.0, y=0.0, z=10.0)
