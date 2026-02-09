@@ -41,3 +41,29 @@ python demo/spectator_coordinate_navigator.py
 - `--tick-hz`：控制循环频率。
 - `--axis-length` / `--axis-z-offset`：坐标轴显示长度与抬升高度。
 - `--redraw-interval` / `--life-time`：坐标轴重绘周期与生命周期。
+
+## ue5_spawn_vehicle_speed_profile_log.py
+
+作用（UE5）：
+- 在 `Town10HD_Opt` 指定点（默认 `(0.038, 15.320, 0.15, yaw=180)`）生成一辆车。
+- 按速度分段驱动车辆：`0-2s` 为 `1.0m/s`，`2-5s` 为 `1.5m/s`，随后停止。
+- 支持切换多种控制方式用于效果对比：`constant_velocity`、`target_velocity`、`vehicle_control`、`ackermann`。
+- 启用俯视跟车观察视角（`spectator` 跟随车辆 XY，固定顶视角高度）。
+- 将车辆真值速度（`get_velocity()` 计算标量速度）追加写入 `tmp/` 日志文件。
+
+基本运行：
+
+```powershell
+python demo/ue5_spawn_vehicle_speed_profile_log.py --control-mode constant_velocity
+```
+
+常用参数：
+- `--control-mode`：控制方式，支持 `constant_velocity` / `target_velocity` / `vehicle_control` / `ackermann`。
+- `--spawn-x` / `--spawn-y` / `--spawn-z` / `--spawn-yaw`：车辆生成坐标与朝向。
+- `--spectator-z` / `--spectator-yaw`：俯视跟车相机高度与朝向。
+- `--tick-hz`：控制与采样循环频率。
+- `--log-path`：日志输出路径（默认 `tmp/town10hd_opt_speed_truth.log`，追加写入）。
+- `--destroy-on-exit`：退出脚本时销毁本次生成车辆。
+
+当前的测试结果表面，选用`target_velocity`最好，因为它不仅在速度变化时追踪迅速，停止命令也相应最快。不过全部方法的真实速度都和命令
+速度有不同。
