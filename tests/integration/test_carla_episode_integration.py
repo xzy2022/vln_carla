@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from typing import Any
 
 import pytest
 
 from adapters.control.simple_agent import SimpleAgent
+from domain.entities import Observation
 from infrastructure.logging.in_memory_logger import InMemoryLogger
 from usecases.episode_types import EpisodeSpec, TerminationReason, TransformSpec
 from usecases.run_episode import RunEpisodeUseCase
@@ -17,12 +19,12 @@ SCENARIO_PATH = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "scen
 @pytest.mark.integration
 def test_construction_detour_short_episode_returns_termination_reason() -> None:
     host, port = _get_server_address_or_skip()
-    pytest.importorskip("carla")
+    carla = pytest.importorskip("carla")
 
     # Import here so missing `carla` does not fail collection.
     from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 
-    _ensure_server_reachable_or_skip(host, port)
+    client = _build_client_or_skip(carla_module=carla, host=host, port=port)
     scenario = _load_scenario()
     max_steps = min(int(scenario.get("max_steps_default", 120)), 100)
 
@@ -38,7 +40,7 @@ def test_construction_detour_short_episode_returns_termination_reason() -> None:
     usecase = RunEpisodeUseCase(
         env=env,
         agent=SimpleAgent(throttle=float(scenario.get("simple_agent_throttle_default", 0.3))),
-        logger=InMemoryLogger(),
+        logger=TopDownFollowLogger(carla_module=carla, client=client, spectator_z=20.0, spectator_yaw=0.0),
     )
 
     spec = EpisodeSpec(
@@ -90,12 +92,41 @@ def _get_server_address_or_skip() -> tuple[str, int]:
     return host, port
 
 
-def _ensure_server_reachable_or_skip(host: str, port: int) -> None:
-    import carla
-
+def _build_client_or_skip(*, carla_module: Any, host: str, port: int) -> Any:
     try:
-        client = carla.Client(host, port)
+        client = carla_module.Client(host, port)
         client.set_timeout(3.0)
         client.get_world()
+        return client
     except Exception as exc:
         pytest.skip(f"integration test skipped: unable to connect CARLA server ({exc})")
+
+
+class TopDownFollowLogger:
+    def __init__(
+        self,
+        *,
+        carla_module: Any,
+        client: Any,
+        spectator_z: float,
+        spectator_yaw: float,
+    ) -> None:
+        self._carla: Any = carla_module
+        self._client: Any = client
+        self._spectator_z = spectator_z
+        self._spectator_yaw = spectator_yaw
+        self._delegate = InMemoryLogger()
+
+    def save(self, obs: Observation) -> None:
+        self._delegate.save(obs)
+        x_lh = float(obs.ego.position[0])
+        y_lh = -float(obs.ego.position[1])
+
+        world = self._client.get_world()
+        spectator = world.get_spectator()
+        location = self._carla.Location(x=x_lh, y=y_lh, z=self._spectator_z)
+        rotation = self._carla.Rotation(pitch=-90.0, yaw=self._spectator_yaw, roll=0.0)
+        spectator.set_transform(self._carla.Transform(location, rotation))
+
+    def flush(self) -> None:
+        self._delegate.flush()

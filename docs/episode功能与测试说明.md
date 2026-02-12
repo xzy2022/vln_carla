@@ -108,30 +108,44 @@ python -m pytest -m integration -q
 1. 当前版本的“违规”不包含碰撞，碰撞单独计数
 2. 终止主原因会按优先级选取，且保留 `termination_reasons` 列表用于分析
 
-## 7. 如何理解测试结果
+## 7. `demo` 与 `integration` 的区别（为什么是不同层级）
 
-### 第 2 层（冒烟）
+`demo/smoke_carla_episode_detour.py` 和 `tests/integration/test_carla_episode_integration.py` 都会连 CARLA、跑 episode，看起来相似，但定位不同，因此属于不同测试层级。
 
-判断“通过”的核心：
+### 7.1 角色定位不同
 
-1. reset 对齐通过（位姿误差在阈值内）
-2. 能连续跑指定步数，或被明确终止原因提前结束
-3. 在 `--provoke lane` 或 `--provoke collision` 下，对应计数出现增长
+1. `demo/smoke_carla_episode_detour.py`：
+   - 目标是“联调冒烟/人工观察”。
+   - 强调可视化与交互可控：支持 `--provoke none/lane/collision`，打印每步详细 telemetry。
+   - 适合开发阶段快速排查：起点对齐、事件回调是否触发、视角是否正常。
+2. `tests/integration/test_carla_episode_integration.py`：
+   - 目标是“自动化回归保护”。
+   - 强调稳定可重复、可在 CI 或批量脚本里执行。
+   - 断言聚焦接口契约：能跑完短 episode，返回 `termination_reason`，结果结构完整。
 
-常见现象：
+### 7.2 通过标准不同
 
-1. `--provoke none` 下计数不变化是正常的
-2. `--provoke lane` 可能很快触发 `VIOLATION` 并结束（正常）
+1. `demo`（第 2 层）通过标准：
+   - reset 位姿接近金标 start。
+   - 跑够指定步数或按预期提前终止。
+   - 在指定 provoke 模式下，相关计数确实变化（例如 `lane_invasion_count` 增长）。
+2. `integration`（第 3 层）通过标准：
+   - 用固定场景可以稳定运行并返回 `EpisodeResult`。
+   - `termination_reason` 非空且有效。
+   - `reset_info`、`step_log`、`metrics` 等核心字段满足契约。
 
-### 第 3 层（integration）
+### 7.3 为什么同样“跑了一次车”，却不算同一层
 
-判断“通过”的核心：
+1. 第 2 层回答的是“系统现在能不能动起来、能不能看见和验证关键行为”。
+2. 第 3 层回答的是“以后改代码会不会把关键契约改坏”。
+3. 前者偏联调诊断，后者偏回归防线；两者互补，不可互相替代。
 
-1. 能完成一次短 episode
-2. 返回结果包含有效 `termination_reason`
-3. `reset_info` 与 `step_log` 字段结构完整
+### 7.4 结果解读建议
 
-当显示 `skipped`：
-
-1. 优先检查环境变量是否设置
-2. 再检查 CARLA 是否可连接
+1. `demo` 失败但 `integration` 通过：
+   - 常见于 provoke 策略不稳定、场景偶发扰动、手工联调条件变化。
+   - 先看运行日志与可视化行为。
+2. `integration` 失败：
+   - 优先视为真实回归风险，先修复契约破坏。
+3. `integration skipped`：
+   - 通常是未设置 `CARLA_SERVER_HOST/CARLA_SERVER_PORT`，或 CARLA 不可连接，不代表功能错误。
