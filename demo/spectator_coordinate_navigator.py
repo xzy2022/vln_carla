@@ -32,7 +32,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--map",
         type=str,
         choices=ALLOWED_UE5_MAPS,
-        default="Mine_01",
+        default="Town10HD_Opt",
         help="Target UE5 map. Allowed: Mine_01, Town10HD_Opt.",
     )
     parser.add_argument("--tick-hz", type=float, default=30.0, help="Control loop frequency.")
