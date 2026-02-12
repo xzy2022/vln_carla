@@ -1,0 +1,81 @@
+{
+  "id": "construction_detour_001",
+  "source_doc": "docs/施工道路绕行.md",
+  "map_name": "Town10HD_Opt",
+  "instruction": "Follow the road and pass the construction detour safely.",
+  "start_transform": {
+    "x": 3.23,
+    "y": 13.768,
+    "z": 0.518,
+    "roll": 0.0,
+    "pitch": 0.0,
+    "yaw": 0.0
+  },
+  "goal_transform": {
+    "x": 19.23,
+    "y": 13.768,
+    "z": 0.518,
+    "roll": 0.0,
+    "pitch": 0.0,
+    "yaw": 0.0
+  },
+  "goal_radius_m": 2.0,
+  "max_steps_default": 120,
+  "simple_agent_throttle_default": 0.3,
+  "obstacles": [
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 8.11,
+      "y": 12.894,
+      "z": 0.496,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 9.255,
+      "y": 14.881,
+      "z": 0.538,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 11.817,
+      "y": 15.453,
+      "z": 0.565,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 14.308,
+      "y": 14.713,
+      "z": 0.564,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 16.328,
+      "y": 12.627,
+      "z": 0.536,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    },
+    {
+      "blueprint_id": "static.prop.barrel",
+      "x": 17.911,
+      "y": 12.055,
+      "z": 0.545,
+      "roll": 0.0,
+      "pitch": 0.0,
+      "yaw": 0.0
+    }
+  ]
+}
