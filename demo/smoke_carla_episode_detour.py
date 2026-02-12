@@ -63,6 +63,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--position-tolerance-m", type=float, default=0.8)
     parser.add_argument("--yaw-tolerance-deg", type=float, default=5.0)
+    parser.add_argument(
+        "--spectator-z",
+        type=float,
+        default=20.0,
+        help="Top-down spectator height in meters.",
+    )
+    parser.add_argument(
+        "--spectator-yaw",
+        type=float,
+        default=0.0,
+        help="Top-down spectator yaw in degrees.",
+    )
     return parser
 
 
@@ -82,8 +94,10 @@ def main() -> int:
         fixed_dt=0.1,
         sensor_timeout=3.0,
         map_name=scenario.map_name,
-        spectator_follow=True,
+        spectator_follow=False,
     )
+    spectator_client = carla.Client(args.host, args.port)
+    spectator_client.set_timeout(5.0)
     agent = SimpleAgent(throttle=args.throttle if args.throttle > 0 else scenario.simple_agent_throttle_default)
     spec = EpisodeSpec(
         instruction=scenario.instruction,
@@ -114,6 +128,17 @@ def main() -> int:
             print("[error] reset pose is not close to expected start transform.")
             return 3
 
+        update_topdown_spectator(
+            client=spectator_client,
+            obs=obs,
+            spectator_z=args.spectator_z,
+            spectator_yaw=args.spectator_yaw,
+        )
+        print(
+            "[info] spectator mode: top-down follow "
+            f"(pitch=-90, yaw={args.spectator_yaw:.1f}, z={args.spectator_z:.1f})"
+        )
+
         initial_collision = reset_info.collision_count
         initial_lane = reset_info.lane_invasion_count
         initial_violation = reset_info.violation_count
@@ -136,6 +161,12 @@ def main() -> int:
             step_result = env.step(cmd)
             step_info = parse_step_info_payload(step_result.info, step_index=idx + 1)
             obs = step_result.obs
+            update_topdown_spectator(
+                client=spectator_client,
+                obs=obs,
+                spectator_z=args.spectator_z,
+                spectator_yaw=args.spectator_yaw,
+            )
 
             collision_changed = collision_changed or (step_info.collision_count > initial_collision)
             lane_changed = lane_changed or (step_info.lane_invasion_count > initial_lane)
@@ -249,6 +280,23 @@ def normalize_angle_deg(value: float) -> float:
     while angle < -180.0:
         angle += 360.0
     return angle
+
+
+def update_topdown_spectator(
+    *,
+    client: carla.Client,
+    obs: Observation,
+    spectator_z: float,
+    spectator_yaw: float,
+) -> None:
+    # Observation position is RH (x, -y, z), while CARLA spectator expects LH.
+    x_lh = float(obs.ego.position[0])
+    y_lh = -float(obs.ego.position[1])
+    world = client.get_world()
+    spectator = world.get_spectator()
+    location = carla.Location(x=x_lh, y=y_lh, z=spectator_z)
+    rotation = carla.Rotation(pitch=-90.0, yaw=spectator_yaw, roll=0.0)
+    spectator.set_transform(carla.Transform(location, rotation))
 
 
 def spawn_obstacles(
