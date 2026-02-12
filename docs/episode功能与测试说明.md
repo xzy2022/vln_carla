@@ -5,6 +5,8 @@
 1. 第 2 层：CARLA 联调冒烟（`demo/smoke_carla_episode_detour.py`）
 2. 第 3 层：自动化集成测试（`tests/integration/test_carla_episode_integration.py`）
 
+对于UE4和UE5版本的carla，均通过测试。
+
 ## 1. Episode 的目标与作用
 
 当前实现把一次驾驶任务抽象为 `EpisodeSpec`，通过 `RunEpisodeUseCase` 驱动环境 `reset/step` 并产出 `EpisodeResult`。
@@ -50,7 +52,6 @@ python demo/smoke_carla_episode_detour.py --host 127.0.0.1 --port 2000 --steps 8
 示例命令：
 
 ```powershell
-conda activate vln_carla_ue5_py312
 $env:CARLA_SERVER_HOST='127.0.0.1'
 $env:CARLA_SERVER_PORT='2000'
 python -m pytest -m integration -q
