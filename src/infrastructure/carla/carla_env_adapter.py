@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 import time
 from queue import Empty
@@ -17,6 +18,13 @@ from infrastructure.carla.carla_conversions import (
     lh_to_rh_velocity,
 )
 from infrastructure.carla.sensor_queue import SensorQueue
+from usecases.episode_types import (
+    EpisodeSpec,
+    ResetInfo,
+    StartGoalRef,
+    TerminationReason,
+    TransformSpec,
+)
 from usecases.ports.env_interface import EnvInterface
 
 MAP_LAYER_ALIASES: Final[dict[str, str]] = {
@@ -64,14 +72,27 @@ class CarlaEnvAdapter(EnvInterface):
         self._actors: list[carla.Actor] = []
         self._vehicle: carla.Vehicle | None = None
         self._camera: carla.Sensor | None = None
+        self._collision_sensor: carla.Sensor | None = None
+        self._lane_invasion_sensor: carla.Sensor | None = None
         self._camera_queue: SensorQueue[carla.Image] | None = None
 
-    def reset(self) -> Observation:
+        self._step_index = 0
+        self._collision_count = 0
+        self._lane_invasion_count = 0
+        self._red_light_violation_count = 0
+        self._stuck_count = 0
+        self._goal_location: carla.Location | None = None
+        self._goal_radius_m = 2.0
+        self._shortest_path_length_m = 0.0
+
+    def reset(self, spec: EpisodeSpec) -> tuple[Observation, ResetInfo]:
         world = self._ensure_connected_world()
         self._apply_sync_settings(world)
         self._apply_map_layer_overrides(world)
         self._destroy_actors()
-        self._spawn_ego_and_sensors(world)
+        self._reset_episode_state()
+        self._spawn_ego_and_sensors(world, spec.start)
+        self._configure_goal(world, spec.goal, spec.goal_radius_m)
 
         try:
             frame = world.tick()
@@ -82,7 +103,16 @@ class CarlaEnvAdapter(EnvInterface):
         except RuntimeError as exc:
             raise EnvStepError("CARLA tick failed during reset") from exc
 
-        return self._build_observation(snapshot, image)
+        return self._build_observation(snapshot, image), ResetInfo(
+            termination_reason=TerminationReason.ONGOING,
+            termination_reasons=(),
+            shortest_path_length_m=self._shortest_path_length_m,
+            collision_count=self._collision_count,
+            lane_invasion_count=self._lane_invasion_count,
+            red_light_violation_count=self._red_light_violation_count,
+            violation_count=self._lane_invasion_count + self._red_light_violation_count,
+            stuck_count=self._stuck_count,
+        )
 
     def step(self, cmd: VehicleCommand) -> StepResult:
         world = self._require_world()
@@ -102,8 +132,34 @@ class CarlaEnvAdapter(EnvInterface):
         except RuntimeError as exc:
             raise EnvStepError("CARLA tick failed during step") from exc
 
+        self._step_index += 1
+        self._red_light_violation_count += self._count_red_light_violations_stub(vehicle)
+
         obs = self._build_observation(snapshot, image)
-        return StepResult(obs=obs, reward=0.0, done=False, info={})
+        speed_mps = _speed_mps(vehicle.get_velocity())
+        distance_to_goal_m, reached_goal = self._goal_distance_and_reached(vehicle)
+        violation_count = self._lane_invasion_count + self._red_light_violation_count
+        termination_reasons = _build_termination_reasons(
+            reached_goal=reached_goal,
+            collision_count=self._collision_count,
+            violation_count=violation_count,
+        )
+        termination_reason = _choose_primary_termination_reason(termination_reasons)
+        done = termination_reason != TerminationReason.ONGOING
+        info: dict[str, object] = {
+            "step_index": self._step_index,
+            "termination_reason": termination_reason.value,
+            "termination_reasons": [reason.value for reason in termination_reasons],
+            "collision_count": self._collision_count,
+            "lane_invasion_count": self._lane_invasion_count,
+            "red_light_violation_count": self._red_light_violation_count,
+            "violation_count": violation_count,
+            "stuck_count": self._stuck_count,
+            "reached_goal": reached_goal,
+            "speed_mps": speed_mps,
+            "distance_to_goal_m": distance_to_goal_m,
+        }
+        return StepResult(obs=obs, reward=0.0, done=done, info=info)
 
     def close(self) -> None:
         self._destroy_actors()
@@ -178,18 +234,14 @@ class CarlaEnvAdapter(EnvInterface):
             except RuntimeError:
                 pass
 
-    def _spawn_ego_and_sensors(self, world: carla.World) -> None:
+    def _spawn_ego_and_sensors(self, world: carla.World, start: StartGoalRef | None) -> None:
         blueprint_library = world.get_blueprint_library()
         candidates = blueprint_library.filter("vehicle.tesla.model3")
         if not candidates:
             candidates = blueprint_library.filter("vehicle.*")
         vehicle_bp = random.choice(candidates)
 
-        spawn_points = world.get_map().get_spawn_points()
-        if not spawn_points:
-            raise EnvStepError("No spawn points available on the map")
-
-        spawn_point = random.choice(spawn_points)
+        spawn_point = self._resolve_spawn_transform(world, start)
         vehicle_actor = world.spawn_actor(vehicle_bp, spawn_point)
         if not isinstance(vehicle_actor, carla.Vehicle):
             raise EnvStepError("Spawned ego actor is not a vehicle")
@@ -215,6 +267,30 @@ class CarlaEnvAdapter(EnvInterface):
         self._camera_queue = SensorQueue[carla.Image]()
         camera_actor.listen(self._camera_queue.push)
 
+        collision_bp = blueprint_library.find("sensor.other.collision")
+        collision_actor = world.spawn_actor(
+            collision_bp,
+            carla.Transform(),
+            attach_to=vehicle_actor,
+        )
+        if not isinstance(collision_actor, carla.Sensor):
+            raise EnvStepError("Spawned collision actor is not a sensor")
+        self._actors.append(collision_actor)
+        self._collision_sensor = collision_actor
+        collision_actor.listen(self._on_collision_event)
+
+        lane_invasion_bp = blueprint_library.find("sensor.other.lane_invasion")
+        lane_invasion_actor = world.spawn_actor(
+            lane_invasion_bp,
+            carla.Transform(),
+            attach_to=vehicle_actor,
+        )
+        if not isinstance(lane_invasion_actor, carla.Sensor):
+            raise EnvStepError("Spawned lane invasion actor is not a sensor")
+        self._actors.append(lane_invasion_actor)
+        self._lane_invasion_sensor = lane_invasion_actor
+        lane_invasion_actor.listen(self._on_lane_invasion_event)
+
     def _update_spectator(self, world: carla.World, vehicle: carla.Vehicle) -> None:
         spectator = world.get_spectator()
         transform = vehicle.get_transform()
@@ -238,6 +314,8 @@ class CarlaEnvAdapter(EnvInterface):
         self._actors = []
         self._vehicle = None
         self._camera = None
+        self._collision_sensor = None
+        self._lane_invasion_sensor = None
         self._camera_queue = None
 
     def _build_observation(self, snapshot: carla.WorldSnapshot, image: carla.Image) -> Observation:
@@ -260,6 +338,90 @@ class CarlaEnvAdapter(EnvInterface):
             timestamp=snapshot.timestamp.elapsed_seconds,
         )
 
+    def _reset_episode_state(self) -> None:
+        self._step_index = 0
+        self._collision_count = 0
+        self._lane_invasion_count = 0
+        self._red_light_violation_count = 0
+        self._stuck_count = 0
+        self._goal_location = None
+        self._goal_radius_m = 2.0
+        self._shortest_path_length_m = 0.0
+
+    def _configure_goal(
+        self,
+        world: carla.World,
+        goal: StartGoalRef | None,
+        goal_radius_m: float,
+    ) -> None:
+        self._goal_radius_m = max(0.1, goal_radius_m)
+        if goal is None:
+            self._goal_location = None
+            self._shortest_path_length_m = 0.0
+            return
+
+        goal_transform = self._resolve_ref_transform(world, goal)
+        self._goal_location = goal_transform.location
+        vehicle = self._require_vehicle()
+        self._shortest_path_length_m = _distance_between_locations(
+            vehicle.get_transform().location,
+            self._goal_location,
+        )
+
+    def _resolve_spawn_transform(
+        self,
+        world: carla.World,
+        start: StartGoalRef | None,
+    ) -> carla.Transform:
+        spawn_points = world.get_map().get_spawn_points()
+        if not spawn_points:
+            raise EnvStepError("No spawn points available on the map")
+        if start is None:
+            return random.choice(spawn_points)
+        return self._resolve_ref_transform(world, start, spawn_points=spawn_points)
+
+    def _resolve_ref_transform(
+        self,
+        world: carla.World,
+        ref: StartGoalRef,
+        *,
+        spawn_points: list[carla.Transform] | None = None,
+    ) -> carla.Transform:
+        if isinstance(ref, int):
+            points = spawn_points
+            if points is None:
+                points = world.get_map().get_spawn_points()
+            if not points:
+                raise EnvStepError("No spawn points available on the map")
+            if ref < 0 or ref >= len(points):
+                raise EnvStepError(f"Spawn point id out of range: {ref}")
+            return points[ref]
+        if isinstance(ref, TransformSpec):
+            return carla.Transform(
+                location=carla.Location(x=ref.x, y=ref.y, z=ref.z),
+                rotation=carla.Rotation(roll=ref.roll, pitch=ref.pitch, yaw=ref.yaw),
+            )
+        raise EnvStepError(f"Unsupported start/goal reference type: {type(ref)!r}")
+
+    def _goal_distance_and_reached(self, vehicle: carla.Vehicle) -> tuple[float, bool]:
+        if self._goal_location is None:
+            return float("inf"), False
+        distance_to_goal_m = _distance_between_locations(
+            vehicle.get_transform().location,
+            self._goal_location,
+        )
+        return distance_to_goal_m, distance_to_goal_m <= self._goal_radius_m
+
+    def _on_collision_event(self, _: object) -> None:
+        self._collision_count += 1
+
+    def _on_lane_invasion_event(self, _: object) -> None:
+        self._lane_invasion_count += 1
+
+    def _count_red_light_violations_stub(self, vehicle: carla.Vehicle) -> int:
+        del vehicle
+        return 0
+
 
 def _image_to_rgb_array(image: carla.Image) -> npt.NDArray[np.uint8]:
     bgra: npt.NDArray[np.uint8] = np.frombuffer(image.raw_data, dtype=np.uint8)
@@ -275,6 +437,51 @@ def _to_vehicle_control(cmd: VehicleCommand) -> carla.VehicleControl:
         steer=cmd.steer,
         brake=cmd.brake,
     )
+
+
+def _speed_mps(velocity: carla.Vector3D) -> float:
+    return math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
+
+
+def _distance_between_locations(a: carla.Location, b: carla.Location) -> float:
+    dx = a.x - b.x
+    dy = a.y - b.y
+    dz = a.z - b.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def _build_termination_reasons(
+    *,
+    reached_goal: bool,
+    collision_count: int,
+    violation_count: int,
+) -> tuple[TerminationReason, ...]:
+    reasons: list[TerminationReason] = []
+    if reached_goal:
+        reasons.append(TerminationReason.SUCCESS)
+    if collision_count > 0:
+        reasons.append(TerminationReason.COLLISION)
+    if violation_count > 0:
+        reasons.append(TerminationReason.VIOLATION)
+    return tuple(reasons)
+
+
+def _choose_primary_termination_reason(
+    reasons: tuple[TerminationReason, ...],
+) -> TerminationReason:
+    if not reasons:
+        return TerminationReason.ONGOING
+
+    priority = {
+        TerminationReason.ERROR: 0,
+        TerminationReason.COLLISION: 1,
+        TerminationReason.VIOLATION: 2,
+        TerminationReason.STUCK: 3,
+        TerminationReason.TIMEOUT: 4,
+        TerminationReason.SUCCESS: 5,
+        TerminationReason.ONGOING: 99,
+    }
+    return min(reasons, key=lambda reason: priority[reason])
 
 
 def _to_map_layer(name: str) -> carla.MapLayer | None:

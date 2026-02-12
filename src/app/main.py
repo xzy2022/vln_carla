@@ -14,6 +14,7 @@ from adapters.control.simple_agent import SimpleAgent
 from domain.errors import EnvConnectionError, EnvStepError
 from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 from infrastructure.logging.in_memory_logger import InMemoryLogger
+from usecases.episode_types import EpisodeSpec
 from usecases.run_episode import RunEpisodeUseCase
 
 CarlaVersion = Literal["ue4", "ue5", "auto"]
@@ -333,15 +334,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         env=env,
         agent=agent,
         logger=logger,
-        max_steps=args.max_steps,
         should_stop=_should_stop,
+    )
+    spec = EpisodeSpec(
+        instruction="Drive forward safely.",
+        start=None,
+        goal=None,
+        preferences={},
+        max_steps=args.max_steps,
+        goal_radius_m=2.0,
     )
 
     try:
-        summary = usecase.run()
+        result = usecase.run(spec)
         if server_exited_early:
             return 1
-        print(f"Episode finished: steps={summary.total_steps} reward={summary.total_reward:.3f}")
+        print(
+            "Episode finished: "
+            f"steps={result.metrics.total_steps} "
+            f"reward={result.total_reward:.3f} "
+            f"term={result.termination_reason.value} "
+            f"SR={result.metrics.sr:.3f} "
+            f"SPL={result.metrics.spl:.3f}"
+        )
     except (EnvConnectionError, EnvStepError) as exc:
         print(f"[error] {exc}")
         return 1

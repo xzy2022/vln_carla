@@ -1,19 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypeAlias, TypedDict
+from typing import TypeAlias
 
 import numpy as np
 import numpy.typing as npt
 
 Float32Array: TypeAlias = npt.NDArray[np.float32]
 UInt8RgbArray: TypeAlias = npt.NDArray[np.uint8]
-
-
-class StepInfo(TypedDict, total=False):
-    termination_reason: str
-    infractions: int
-    speed_mps: float
+InfoPayload: TypeAlias = Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -58,7 +54,7 @@ class StepResult:
     obs: Observation
     reward: float
     done: bool
-    info: StepInfo
+    info: InfoPayload
 
 
 def _clamp(value: float, low: float, high: float) -> float:

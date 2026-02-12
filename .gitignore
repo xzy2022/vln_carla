@@ -12,3 +12,5 @@ PythonAPI_Carla_UE5/*
 
 results/*
 tmp/
+
+pytest.ini

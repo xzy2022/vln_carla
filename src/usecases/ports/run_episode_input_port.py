@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from usecases.dtos import EpisodeSummary
+from usecases.episode_types import EpisodeResult, EpisodeSpec
 
 
 class RunEpisodeInputPort(Protocol):
-    def run(self) -> EpisodeSummary:
+    def run(self, spec: EpisodeSpec) -> EpisodeResult:
         ...
