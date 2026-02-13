@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from adapters.control.simple_agent import SimpleAgent
 from domain.entities import Observation
+from infrastructure.agents.simple_agent import SimpleAgent
 from infrastructure.logging.in_memory_logger import InMemoryLogger
 from usecases.episode_types import EpisodeSpec, TerminationReason, TransformSpec
 from usecases.run_episode import RunEpisodeUseCase

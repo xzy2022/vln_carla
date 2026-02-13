@@ -14,8 +14,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from adapters.control.simple_agent import SimpleAgent
 from domain.entities import Observation, VehicleCommand
+from infrastructure.agents.simple_agent import SimpleAgent
 from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 from usecases.episode_info_parser import parse_step_info_payload
 from usecases.episode_types import EpisodeSpec, TransformSpec

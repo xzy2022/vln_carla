@@ -1,13 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from domain.entities import Observation, VehicleCommand
-from usecases.ports.agent_interface import AgentInterface
-
-
-class SimpleAgent(AgentInterface):
-    def __init__(self, throttle: float = 0.3) -> None:
-        self._throttle = throttle
-
-    def act(self, obs: Observation) -> VehicleCommand:
-        return VehicleCommand(throttle=self._throttle, steer=0.0, brake=0.0)
-
+raise ImportError(
+    "Deprecated module path: adapters.control.simple_agent. "
+    "Use infrastructure.agents.simple_agent instead."
+)

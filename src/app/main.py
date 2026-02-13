@@ -10,8 +10,8 @@ from collections.abc import Sequence
 from importlib import metadata
 from typing import Literal
 
-from adapters.control.simple_agent import SimpleAgent
 from domain.errors import EnvConnectionError, EnvStepError
+from infrastructure.agents.simple_agent import SimpleAgent
 from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 from infrastructure.logging.in_memory_logger import InMemoryLogger
 from usecases.episode_types import EpisodeSpec
