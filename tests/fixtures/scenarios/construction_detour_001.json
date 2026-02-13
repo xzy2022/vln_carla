@@ -22,6 +22,65 @@
   "goal_radius_m": 2.0,
   "max_steps_default": 120,
   "simple_agent_throttle_default": 0.3,
+  "workzone_default_cooldown_steps": 0,
+  "violation_thresholds": {
+    "lane": null,
+    "red_light": null,
+    "workzone_by_severity": {
+      "hard": 1,
+      "soft": 999
+    }
+  },
+  "workzones": [
+    {
+      "id": "detour_hard_zone",
+      "severity": "hard",
+      "terminate_on_enter": false,
+      "cooldown_steps": 0,
+      "polygon_world_xy": [
+        {
+          "x": 7.5,
+          "y": 11.5
+        },
+        {
+          "x": 20.5,
+          "y": 11.5
+        },
+        {
+          "x": 20.5,
+          "y": 15.8
+        },
+        {
+          "x": 7.5,
+          "y": 15.8
+        }
+      ]
+    },
+    {
+      "id": "detour_soft_zone",
+      "severity": "soft",
+      "terminate_on_enter": false,
+      "cooldown_steps": 0,
+      "polygon_world_xy": [
+        {
+          "x": 8.0,
+          "y": 10.8
+        },
+        {
+          "x": 21.0,
+          "y": 10.8
+        },
+        {
+          "x": 21.0,
+          "y": 16.5
+        },
+        {
+          "x": 8.0,
+          "y": 16.5
+        }
+      ]
+    }
+  ],
   "obstacles": [
     {
       "blueprint_id": "static.prop.barrel",

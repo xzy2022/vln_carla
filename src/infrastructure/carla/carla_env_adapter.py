@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from dataclasses import dataclass
 from queue import Empty
 from typing import Final
 
@@ -12,6 +13,12 @@ import numpy.typing as npt
 
 from domain.entities import Observation, StepResult, VehicleCommand, VehicleState
 from domain.errors import EnvConnectionError, EnvStepError
+from domain.workzone_policy import (
+    entered_zones,
+    filter_entered_by_cooldown,
+    inside_by_any_corner,
+    validate_polygon,
+)
 from infrastructure.carla.carla_conversions import (
     lh_to_rh_location,
     lh_to_rh_rotation,
@@ -24,6 +31,8 @@ from usecases.episode_types import (
     StartGoalRef,
     TerminationReason,
     TransformSpec,
+    ViolationThresholdsSpec,
+    WorkZoneSeverity,
 )
 from usecases.ports.env_interface import EnvInterface
 
@@ -32,6 +41,15 @@ MAP_LAYER_ALIASES: Final[dict[str, str]] = {
     "parkedvehicles": "parkedvehicles",
     "streetlights": "streetlights",
 }
+
+
+@dataclass(frozen=True)
+class _RuntimeWorkZone:
+    id: str
+    polygon_world_xy: tuple[tuple[float, float], ...]
+    severity: WorkZoneSeverity
+    terminate_on_enter: bool
+    cooldown_steps: int
 
 
 class CarlaEnvAdapter(EnvInterface):
@@ -84,6 +102,15 @@ class CarlaEnvAdapter(EnvInterface):
         self._goal_location: carla.Location | None = None
         self._goal_radius_m = 2.0
         self._shortest_path_length_m = 0.0
+        self._workzones_by_id: dict[str, _RuntimeWorkZone] = {}
+        self._workzone_order: tuple[str, ...] = ()
+        self._prev_inside_zone_ids: tuple[str, ...] = ()
+        self._last_enter_step_by_zone: dict[str, int] = {}
+        self._cooldown_steps_by_zone: dict[str, int] = {}
+        self._workzone_violation_count = 0
+        self._workzone_hard_count = 0
+        self._workzone_soft_count = 0
+        self._violation_thresholds = ViolationThresholdsSpec()
 
     def reset(self, spec: EpisodeSpec) -> tuple[Observation, ResetInfo]:
         world = self._ensure_connected_world()
@@ -93,6 +120,7 @@ class CarlaEnvAdapter(EnvInterface):
         self._reset_episode_state()
         self._spawn_ego_and_sensors(world, spec.start)
         self._configure_goal(world, spec.goal, spec.goal_radius_m)
+        self._configure_workzones(spec)
 
         try:
             frame = world.tick()
@@ -103,6 +131,12 @@ class CarlaEnvAdapter(EnvInterface):
         except RuntimeError as exc:
             raise EnvStepError("CARLA tick failed during reset") from exc
 
+        self._prev_inside_zone_ids = self._detect_inside_zone_ids(self._require_vehicle())
+        violation_count = (
+            self._lane_invasion_count
+            + self._red_light_violation_count
+            + self._workzone_violation_count
+        )
         return self._build_observation(snapshot, image), ResetInfo(
             termination_reason=TerminationReason.ONGOING,
             termination_reasons=(),
@@ -110,7 +144,8 @@ class CarlaEnvAdapter(EnvInterface):
             collision_count=self._collision_count,
             lane_invasion_count=self._lane_invasion_count,
             red_light_violation_count=self._red_light_violation_count,
-            violation_count=self._lane_invasion_count + self._red_light_violation_count,
+            workzone_violation_count=self._workzone_violation_count,
+            violation_count=violation_count,
             stuck_count=self._stuck_count,
         )
 
@@ -134,15 +169,21 @@ class CarlaEnvAdapter(EnvInterface):
 
         self._step_index += 1
         self._red_light_violation_count += self._count_red_light_violations_stub(vehicle)
+        entered_zone_ids, effective_entered_zone_ids = self._update_workzone_violations(vehicle)
 
         obs = self._build_observation(snapshot, image)
         speed_mps = _speed_mps(vehicle.get_velocity())
         distance_to_goal_m, reached_goal = self._goal_distance_and_reached(vehicle)
-        violation_count = self._lane_invasion_count + self._red_light_violation_count
+        violation_count = (
+            self._lane_invasion_count
+            + self._red_light_violation_count
+            + self._workzone_violation_count
+        )
+        violation_triggered = self._is_violation_termination_triggered(effective_entered_zone_ids)
         termination_reasons = _build_termination_reasons(
             reached_goal=reached_goal,
             collision_count=self._collision_count,
-            violation_count=violation_count,
+            violation_triggered=violation_triggered,
         )
         termination_reason = _choose_primary_termination_reason(termination_reasons)
         done = termination_reason != TerminationReason.ONGOING
@@ -153,6 +194,11 @@ class CarlaEnvAdapter(EnvInterface):
             "collision_count": self._collision_count,
             "lane_invasion_count": self._lane_invasion_count,
             "red_light_violation_count": self._red_light_violation_count,
+            "workzone_violation_count": self._workzone_violation_count,
+            "workzone_hard_violation_count": self._workzone_hard_count,
+            "workzone_soft_violation_count": self._workzone_soft_count,
+            "entered_workzone_ids": list(entered_zone_ids),
+            "effective_entered_workzone_ids": list(effective_entered_zone_ids),
             "violation_count": violation_count,
             "stuck_count": self._stuck_count,
             "reached_goal": reached_goal,
@@ -343,6 +389,15 @@ class CarlaEnvAdapter(EnvInterface):
         self._collision_count = 0
         self._lane_invasion_count = 0
         self._red_light_violation_count = 0
+        self._workzone_violation_count = 0
+        self._workzone_hard_count = 0
+        self._workzone_soft_count = 0
+        self._prev_inside_zone_ids = ()
+        self._last_enter_step_by_zone = {}
+        self._workzones_by_id = {}
+        self._workzone_order = ()
+        self._cooldown_steps_by_zone = {}
+        self._violation_thresholds = ViolationThresholdsSpec()
         self._stuck_count = 0
         self._goal_location = None
         self._goal_radius_m = 2.0
@@ -367,6 +422,106 @@ class CarlaEnvAdapter(EnvInterface):
             vehicle.get_transform().location,
             self._goal_location,
         )
+
+    def _configure_workzones(self, spec: EpisodeSpec) -> None:
+        if spec.workzone_default_cooldown_steps < 0:
+            raise EnvStepError("workzone_default_cooldown_steps must be >= 0")
+        _validate_violation_thresholds(spec.violation_thresholds)
+
+        workzones_by_id: dict[str, _RuntimeWorkZone] = {}
+        cooldown_steps_by_zone: dict[str, int] = {}
+        zone_order: list[str] = []
+        for workzone in spec.workzones:
+            if workzone.id in workzones_by_id:
+                raise EnvStepError(f"Duplicated workzone id: {workzone.id}")
+
+            raw_polygon = tuple((point.x, point.y) for point in workzone.polygon_world_xy)
+            try:
+                polygon_world_xy = validate_polygon(raw_polygon)
+            except ValueError as exc:
+                raise EnvStepError(
+                    f"Invalid polygon for workzone '{workzone.id}': {exc}",
+                ) from exc
+
+            cooldown_steps = (
+                spec.workzone_default_cooldown_steps
+                if workzone.cooldown_steps is None
+                else workzone.cooldown_steps
+            )
+            if cooldown_steps < 0:
+                raise EnvStepError(f"workzone '{workzone.id}' cooldown_steps must be >= 0")
+
+            runtime_zone = _RuntimeWorkZone(
+                id=workzone.id,
+                polygon_world_xy=polygon_world_xy,
+                severity=workzone.severity,
+                terminate_on_enter=workzone.terminate_on_enter,
+                cooldown_steps=cooldown_steps,
+            )
+            workzones_by_id[workzone.id] = runtime_zone
+            cooldown_steps_by_zone[workzone.id] = cooldown_steps
+            zone_order.append(workzone.id)
+
+        self._workzones_by_id = workzones_by_id
+        self._cooldown_steps_by_zone = cooldown_steps_by_zone
+        self._workzone_order = tuple(zone_order)
+        self._violation_thresholds = spec.violation_thresholds
+
+    def _update_workzone_violations(
+        self,
+        vehicle: carla.Vehicle,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        curr_inside_zone_ids = self._detect_inside_zone_ids(vehicle)
+        entered_zone_ids = entered_zones(self._prev_inside_zone_ids, curr_inside_zone_ids)
+        effective_entered_zone_ids = filter_entered_by_cooldown(
+            entered_zone_ids,
+            current_step=self._step_index,
+            last_enter_step_by_zone=self._last_enter_step_by_zone,
+            cooldown_steps_by_zone=self._cooldown_steps_by_zone,
+        )
+        for zone_id in effective_entered_zone_ids:
+            self._last_enter_step_by_zone[zone_id] = self._step_index
+            zone = self._workzones_by_id[zone_id]
+            if zone.severity == WorkZoneSeverity.HARD:
+                self._workzone_hard_count += 1
+            else:
+                self._workzone_soft_count += 1
+        self._workzone_violation_count += len(effective_entered_zone_ids)
+        self._prev_inside_zone_ids = curr_inside_zone_ids
+        return entered_zone_ids, effective_entered_zone_ids
+
+    def _is_violation_termination_triggered(
+        self,
+        effective_entered_zone_ids: tuple[str, ...],
+    ) -> bool:
+        if any(
+            self._workzones_by_id[zone_id].terminate_on_enter
+            for zone_id in effective_entered_zone_ids
+        ):
+            return True
+
+        thresholds = self._violation_thresholds
+        if _is_threshold_reached(self._lane_invasion_count, thresholds.lane):
+            return True
+        if _is_threshold_reached(self._red_light_violation_count, thresholds.red_light):
+            return True
+        if _is_threshold_reached(self._workzone_hard_count, thresholds.workzone_by_severity.hard):
+            return True
+        if _is_threshold_reached(self._workzone_soft_count, thresholds.workzone_by_severity.soft):
+            return True
+        return False
+
+    def _detect_inside_zone_ids(self, vehicle: carla.Vehicle) -> tuple[str, ...]:
+        if not self._workzone_order:
+            return ()
+
+        corners_xy = _vehicle_bottom_corners_xy(vehicle)
+        inside_ids: list[str] = []
+        for zone_id in self._workzone_order:
+            zone = self._workzones_by_id[zone_id]
+            if inside_by_any_corner(corners_xy, zone.polygon_world_xy):
+                inside_ids.append(zone_id)
+        return tuple(inside_ids)
 
     def _resolve_spawn_transform(
         self,
@@ -454,16 +609,45 @@ def _build_termination_reasons(
     *,
     reached_goal: bool,
     collision_count: int,
-    violation_count: int,
+    violation_triggered: bool,
 ) -> tuple[TerminationReason, ...]:
     reasons: list[TerminationReason] = []
     if reached_goal:
         reasons.append(TerminationReason.SUCCESS)
     if collision_count > 0:
         reasons.append(TerminationReason.COLLISION)
-    if violation_count > 0:
+    if violation_triggered:
         reasons.append(TerminationReason.VIOLATION)
     return tuple(reasons)
+
+
+def _is_threshold_reached(count: int, threshold: int | None) -> bool:
+    if threshold is None:
+        return False
+    return count >= threshold
+
+
+def _validate_violation_thresholds(thresholds: ViolationThresholdsSpec) -> None:
+    if thresholds.lane is not None and thresholds.lane < 0:
+        raise EnvStepError("lane violation threshold must be >= 0")
+    if thresholds.red_light is not None and thresholds.red_light < 0:
+        raise EnvStepError("red_light violation threshold must be >= 0")
+    if thresholds.workzone_by_severity.hard < 0:
+        raise EnvStepError("workzone hard threshold must be >= 0")
+    if thresholds.workzone_by_severity.soft < 0:
+        raise EnvStepError("workzone soft threshold must be >= 0")
+
+
+def _vehicle_bottom_corners_xy(vehicle: carla.Vehicle) -> tuple[tuple[float, float], ...]:
+    transform = vehicle.get_transform()
+    vertices = vehicle.bounding_box.get_world_vertices(transform)
+    if len(vertices) < 4:
+        raise EnvStepError("vehicle bounding box is missing vertices")
+    lowest_four = sorted(vertices, key=lambda vertex: float(vertex.z))[:4]
+    corners_xy = tuple((float(vertex.x), float(vertex.y)) for vertex in lowest_four)
+    if len(corners_xy) < 4:
+        raise EnvStepError("vehicle bounding box bottom corners are invalid")
+    return corners_xy
 
 
 def _choose_primary_termination_reason(

@@ -11,7 +11,16 @@ import pytest
 from domain.entities import Observation
 from infrastructure.agents.simple_agent import SimpleAgent
 from infrastructure.logging.in_memory_logger import InMemoryLogger
-from usecases.episode_types import EpisodeSpec, TerminationReason, TransformSpec
+from usecases.episode_types import (
+    EpisodeSpec,
+    TerminationReason,
+    TransformSpec,
+    ViolationThresholdsSpec,
+    WorkZoneSeverity,
+    WorkZoneSpec,
+    WorkZoneThresholdBySeveritySpec,
+    WorldXYPointSpec,
+)
 from usecases.run_episode import RunEpisodeUseCase
 
 SCENARIO_PATH = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "scenarios" / "construction_detour_001.json"
@@ -56,6 +65,9 @@ def test_construction_detour_short_episode_returns_termination_reason() -> None:
         start=start_transform,
         goal=_parse_transform(scenario["goal_transform"]),
         goal_radius_m=float(scenario.get("goal_radius_m", 2.0)),
+        workzones=_parse_workzones(scenario),
+        violation_thresholds=_parse_violation_thresholds(scenario),
+        workzone_default_cooldown_steps=int(scenario.get("workzone_default_cooldown_steps", 0)),
         max_steps=max_steps,
     )
 
@@ -90,6 +102,73 @@ def _parse_transform(raw: object) -> TransformSpec:
         pitch=float(data["pitch"]),
         yaw=float(data["yaw"]),
     )
+
+
+def _parse_workzones(scenario: dict[str, object]) -> tuple[WorkZoneSpec, ...]:
+    raw = scenario.get("workzones", [])
+    if not isinstance(raw, list):
+        raise TypeError("workzones must be a list")
+
+    workzones: list[WorkZoneSpec] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise TypeError("invalid workzone payload")
+        polygon_raw = item.get("polygon_world_xy", [])
+        if not isinstance(polygon_raw, list):
+            raise TypeError("polygon_world_xy must be a list")
+        polygon_points: list[WorldXYPointSpec] = []
+        for point in polygon_raw:
+            if not isinstance(point, dict):
+                raise TypeError("invalid polygon point payload")
+            polygon_points.append(
+                WorldXYPointSpec(x=float(point["x"]), y=float(point["y"])),
+            )
+        polygon = tuple(polygon_points)
+        workzones.append(
+            WorkZoneSpec(
+                id=str(item["id"]),
+                polygon_world_xy=polygon,
+                severity=_parse_workzone_severity(item.get("severity", "hard")),
+                terminate_on_enter=bool(item.get("terminate_on_enter", False)),
+                cooldown_steps=_parse_optional_int(item.get("cooldown_steps")),
+            ),
+        )
+    return tuple(workzones)
+
+
+def _parse_violation_thresholds(scenario: dict[str, object]) -> ViolationThresholdsSpec:
+    raw = scenario.get("violation_thresholds", {})
+    if not isinstance(raw, dict):
+        raise TypeError("violation_thresholds must be a dict")
+    raw_workzone = raw.get("workzone_by_severity", {})
+    if not isinstance(raw_workzone, dict):
+        raise TypeError("workzone_by_severity must be a dict")
+    return ViolationThresholdsSpec(
+        lane=_parse_optional_int(raw.get("lane")),
+        red_light=_parse_optional_int(raw.get("red_light")),
+        workzone_by_severity=WorkZoneThresholdBySeveritySpec(
+            hard=int(raw_workzone.get("hard", 1)),
+            soft=int(raw_workzone.get("soft", 999)),
+        ),
+    )
+
+
+def _parse_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _parse_workzone_severity(value: object) -> WorkZoneSeverity:
+    if isinstance(value, WorkZoneSeverity):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == WorkZoneSeverity.HARD.value:
+            return WorkZoneSeverity.HARD
+        if normalized == WorkZoneSeverity.SOFT.value:
+            return WorkZoneSeverity.SOFT
+    raise TypeError(f"invalid workzone severity: {value!r}")
 
 
 def _get_server_address_or_skip() -> tuple[str, int]:

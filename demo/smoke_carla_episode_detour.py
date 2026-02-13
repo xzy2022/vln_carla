@@ -18,7 +18,15 @@ from domain.entities import Observation, VehicleCommand
 from infrastructure.agents.simple_agent import SimpleAgent
 from infrastructure.carla.carla_env_adapter import CarlaEnvAdapter
 from usecases.episode_info_parser import parse_step_info_payload
-from usecases.episode_types import EpisodeSpec, TransformSpec
+from usecases.episode_types import (
+    EpisodeSpec,
+    TransformSpec,
+    ViolationThresholdsSpec,
+    WorkZoneSeverity,
+    WorkZoneSpec,
+    WorkZoneThresholdBySeveritySpec,
+    WorldXYPointSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +50,9 @@ class ScenarioSpec:
     max_steps_default: int
     simple_agent_throttle_default: float
     obstacles: list[ObstacleSpec]
+    workzones: tuple[WorkZoneSpec, ...]
+    violation_thresholds: ViolationThresholdsSpec
+    workzone_default_cooldown_steps: int
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -103,6 +114,9 @@ def main() -> int:
         instruction=scenario.instruction,
         start=scenario.start_transform,
         goal=scenario.goal_transform,
+        workzones=scenario.workzones,
+        violation_thresholds=scenario.violation_thresholds,
+        workzone_default_cooldown_steps=scenario.workzone_default_cooldown_steps,
         max_steps=args.steps,
         goal_radius_m=scenario.goal_radius_m,
     )
@@ -141,16 +155,18 @@ def main() -> int:
 
         initial_collision = reset_info.collision_count
         initial_lane = reset_info.lane_invasion_count
+        initial_workzone = reset_info.workzone_violation_count
         initial_violation = reset_info.violation_count
         collision_changed = False
         lane_changed = False
         last_collision = initial_collision
         last_lane = initial_lane
+        last_workzone = initial_workzone
         last_violation = initial_violation
 
         print(
             "[info] step telemetry header: "
-            "step collision lane violation term speed_mps dist_to_goal_m"
+            "step collision lane workzone violation term speed_mps dist_to_goal_m entered_workzone_ids"
         )
         for idx in range(args.steps):
             cmd = agent.act(obs)
@@ -172,13 +188,17 @@ def main() -> int:
             lane_changed = lane_changed or (step_info.lane_invasion_count > initial_lane)
             last_collision = step_info.collision_count
             last_lane = step_info.lane_invasion_count
+            last_workzone = step_info.workzone_violation_count
             last_violation = step_info.violation_count
+            entered_ids = step_result.info.get("effective_entered_workzone_ids", [])
 
             print(
                 f"[step] {step_info.step_index:03d} "
                 f"{step_info.collision_count} {step_info.lane_invasion_count} "
-                f"{step_info.violation_count} {step_info.termination_reason.value} "
-                f"{step_info.speed_mps:.3f} {step_info.distance_to_goal_m:.3f}"
+                f"{step_info.workzone_violation_count} {step_info.violation_count} "
+                f"{step_info.termination_reason.value} "
+                f"{step_info.speed_mps:.3f} {step_info.distance_to_goal_m:.3f} "
+                f"{entered_ids}"
             )
 
             if step_result.done:
@@ -188,7 +208,8 @@ def main() -> int:
         print(
             "[summary] "
             f"collision_changed={collision_changed} lane_changed={lane_changed} "
-            f"final_collision={last_collision} final_lane={last_lane} final_violation={last_violation}"
+            f"final_collision={last_collision} final_lane={last_lane} "
+            f"final_workzone={last_workzone} final_violation={last_violation}"
         )
 
         if args.provoke == "collision" and not collision_changed:
@@ -218,6 +239,33 @@ def load_scenario(path: pathlib.Path) -> ScenarioSpec:
         )
         for item in raw.get("obstacles", [])
     ]
+    workzones = tuple(
+        WorkZoneSpec(
+            id=str(item["id"]),
+            polygon_world_xy=tuple(
+                WorldXYPointSpec(x=float(point["x"]), y=float(point["y"]))
+                for point in item.get("polygon_world_xy", [])
+            ),
+            severity=_parse_workzone_severity(item.get("severity", "hard")),
+            terminate_on_enter=bool(item.get("terminate_on_enter", False)),
+            cooldown_steps=_parse_optional_int(item.get("cooldown_steps")),
+        )
+        for item in raw.get("workzones", [])
+    )
+    raw_thresholds = raw.get("violation_thresholds", {})
+    if not isinstance(raw_thresholds, dict):
+        raise ValueError("violation_thresholds must be a JSON object")
+    raw_workzone_thresholds = raw_thresholds.get("workzone_by_severity", {})
+    if not isinstance(raw_workzone_thresholds, dict):
+        raise ValueError("workzone_by_severity must be a JSON object")
+    violation_thresholds = ViolationThresholdsSpec(
+        lane=_parse_optional_int(raw_thresholds.get("lane")),
+        red_light=_parse_optional_int(raw_thresholds.get("red_light")),
+        workzone_by_severity=WorkZoneThresholdBySeveritySpec(
+            hard=int(raw_workzone_thresholds.get("hard", 1)),
+            soft=int(raw_workzone_thresholds.get("soft", 999)),
+        ),
+    )
     return ScenarioSpec(
         map_name=str(raw["map_name"]),
         instruction=str(raw["instruction"]),
@@ -227,6 +275,9 @@ def load_scenario(path: pathlib.Path) -> ScenarioSpec:
         max_steps_default=int(raw.get("max_steps_default", 120)),
         simple_agent_throttle_default=float(raw.get("simple_agent_throttle_default", 0.3)),
         obstacles=obstacles,
+        workzones=workzones,
+        violation_thresholds=violation_thresholds,
+        workzone_default_cooldown_steps=int(raw.get("workzone_default_cooldown_steps", 0)),
     )
 
 
@@ -280,6 +331,24 @@ def normalize_angle_deg(value: float) -> float:
     while angle < -180.0:
         angle += 360.0
     return angle
+
+
+def _parse_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _parse_workzone_severity(value: object) -> WorkZoneSeverity:
+    if isinstance(value, WorkZoneSeverity):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == WorkZoneSeverity.HARD.value:
+            return WorkZoneSeverity.HARD
+        if normalized == WorkZoneSeverity.SOFT.value:
+            return WorkZoneSeverity.SOFT
+    raise ValueError(f"invalid workzone severity: {value!r}")
 
 
 def update_topdown_spectator(

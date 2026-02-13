@@ -148,6 +148,7 @@ class RunEpisodeUseCase(RunEpisodeInputPort):
             violation_count=latest_counts.violation_count,
             lane_invasion_count=latest_counts.lane_invasion_count,
             red_light_violation_count=latest_counts.red_light_violation_count,
+            workzone_violation_count=latest_counts.workzone_violation_count,
             stuck_count=latest_counts.stuck_count,
             shortest_path_length_m=shortest_path_length_m,
             actual_path_length_m=actual_path_length_m,
@@ -196,7 +197,11 @@ def _extract_latest_counts(
         last_step = step_log[-1]
         return dataclasses.replace(
             last_step,
-            violation_count=last_step.lane_invasion_count + last_step.red_light_violation_count,
+            violation_count=(
+                last_step.lane_invasion_count
+                + last_step.red_light_violation_count
+                + last_step.workzone_violation_count
+            ),
             stuck_count=max(last_step.stuck_count, usecase_stuck_count),
         )
 
@@ -208,7 +213,12 @@ def _extract_latest_counts(
         collision_count=reset_info.collision_count,
         lane_invasion_count=reset_info.lane_invasion_count,
         red_light_violation_count=reset_info.red_light_violation_count,
-        violation_count=reset_info.lane_invasion_count + reset_info.red_light_violation_count,
+        workzone_violation_count=reset_info.workzone_violation_count,
+        violation_count=(
+            reset_info.lane_invasion_count
+            + reset_info.red_light_violation_count
+            + reset_info.workzone_violation_count
+        ),
         stuck_count=max(reset_info.stuck_count, usecase_stuck_count),
         reached_goal=False,
         speed_mps=0.0,
