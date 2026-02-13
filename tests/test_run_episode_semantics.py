@@ -117,18 +117,19 @@ def test_spl_formula_uses_shortest_and_actual_path_length() -> None:
     assert result.metrics.spl == 10.0 / 12.0
 
 
-def test_stepinfo_accumulates_collision_lane_and_red_light() -> None:
+def test_stepinfo_accumulates_collision_lane_red_light_and_workzone() -> None:
     env = ScriptedFakeEnv(
         shortest_path_length_m=10.0,
         scripted_steps=[
-            _step(1, x=1.0, lane_invasion_count=1, red_light_violation_count=0),
-            _step(2, x=2.0, lane_invasion_count=1, red_light_violation_count=1),
+            _step(1, x=1.0, lane_invasion_count=1, red_light_violation_count=0, workzone_violation_count=0),
+            _step(2, x=2.0, lane_invasion_count=1, red_light_violation_count=1, workzone_violation_count=1),
             _step(
                 3,
                 x=3.0,
                 collision_count=1,
                 lane_invasion_count=2,
                 red_light_violation_count=1,
+                workzone_violation_count=2,
                 done=True,
             ),
         ],
@@ -137,8 +138,9 @@ def test_stepinfo_accumulates_collision_lane_and_red_light() -> None:
 
     assert result.step_log[0].lane_invasion_count == 1
     assert result.step_log[1].red_light_violation_count == 1
+    assert result.step_log[2].workzone_violation_count == 2
     assert result.step_log[2].collision_count == 1
-    assert result.step_log[2].violation_count == 3
+    assert result.step_log[2].violation_count == 5
 
 
 def test_primary_reason_prefers_collision_over_success() -> None:
@@ -172,6 +174,7 @@ def test_violation_formula_excludes_collision_count() -> None:
                 collision_count=5,
                 lane_invasion_count=2,
                 red_light_violation_count=1,
+                workzone_violation_count=4,
                 violation_count=999,
                 done=True,
             ),
@@ -179,8 +182,8 @@ def test_violation_formula_excludes_collision_count() -> None:
     )
     result = _run(env, max_steps=5)
 
-    assert result.step_log[-1].violation_count == 3
-    assert result.metrics.violation_count == 3
+    assert result.step_log[-1].violation_count == 7
+    assert result.metrics.violation_count == 7
     assert result.metrics.collision_count == 5
 
 
@@ -204,6 +207,7 @@ def _step(
     collision_count: int = 0,
     lane_invasion_count: int = 0,
     red_light_violation_count: int = 0,
+    workzone_violation_count: int = 0,
     violation_count: int = 0,
     stuck_count: int = 0,
     reached_goal: bool = False,
@@ -221,6 +225,7 @@ def _step(
             "collision_count": collision_count,
             "lane_invasion_count": lane_invasion_count,
             "red_light_violation_count": red_light_violation_count,
+            "workzone_violation_count": workzone_violation_count,
             "violation_count": violation_count,
             "stuck_count": stuck_count,
             "reached_goal": reached_goal,

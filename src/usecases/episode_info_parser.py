@@ -50,7 +50,11 @@ def parse_step_info_payload(
         0,
         _as_int(payload.get("red_light_violation_count"), default=0),
     )
-    violation_count = lane_invasion_count + red_light_violation_count
+    workzone_violation_count = max(
+        0,
+        _as_int(payload.get("workzone_violation_count"), default=0),
+    )
+    violation_count = lane_invasion_count + red_light_violation_count + workzone_violation_count
 
     termination_reason = parse_termination_reason(payload.get("termination_reason"))
     termination_reasons = list(parse_termination_reasons(payload.get("termination_reasons")))
@@ -70,6 +74,7 @@ def parse_step_info_payload(
         collision_count=collision_count,
         lane_invasion_count=lane_invasion_count,
         red_light_violation_count=red_light_violation_count,
+        workzone_violation_count=workzone_violation_count,
         violation_count=violation_count,
         stuck_count=max(0, _as_int(payload.get("stuck_count"), default=0)),
         reached_goal=_as_bool(payload.get("reached_goal"), default=False),

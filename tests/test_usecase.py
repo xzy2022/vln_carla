@@ -33,6 +33,7 @@ class FakeEnv:
                 "collision_count": 0,
                 "lane_invasion_count": 0,
                 "red_light_violation_count": 0,
+                "workzone_violation_count": 0,
                 "violation_count": 0,
                 "stuck_count": 0,
                 "reached_goal": done,

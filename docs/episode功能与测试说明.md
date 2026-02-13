@@ -78,7 +78,7 @@ python -m pytest -m integration -q
 1. `step_index`：当前 step 编号（从 1 开始）
 2. `collision_count`：累计碰撞次数
 3. `lane_invasion_count`：累计压线次数
-4. `violation_count`：累计违规次数（当前口径：`lane_invasion_count + red_light_violation_count`）
+4. `violation_count`：累计违规次数（当前口径：`lane_invasion_count + red_light_violation_count + workzone_violation_count`）
 5. `termination_reason`：当前主终止原因
 6. `speed_mps`：当前速度（米/秒）
 7. `distance_to_goal_m`：到目标点距离（米）
@@ -91,7 +91,7 @@ python -m pytest -m integration -q
 2. `SUCCESS`：达到目标区域
 3. `TIMEOUT`：超过最大步数
 4. `COLLISION`：发生碰撞
-5. `VIOLATION`：发生违规（如压线/红灯）
+5. `VIOLATION`：达到违规终止条件（阈值或 `terminate_on_enter`）
 6. `STUCK`：长时间低速卡滞
 7. `ERROR`：运行异常或外部中断
 
@@ -102,7 +102,8 @@ python -m pytest -m integration -q
 1. 碰撞：`sensor.other.collision` 回调累计 `collision_count`
 2. 压线：`sensor.other.lane_invasion` 回调累计 `lane_invasion_count`
 3. 红灯：当前为 stub（`_count_red_light_violations_stub`），默认返回 0
-4. 违规计数：`violation_count = lane_invasion_count + red_light_violation_count`
+4. 禁行区：scenario 显式 `workzones[].polygon_world_xy`，按 bbox 底面四角进入事件计数（支持 cooldown）
+5. 违规计数：`violation_count = lane_invasion_count + red_light_violation_count + workzone_violation_count`
 
 说明：
 

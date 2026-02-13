@@ -20,6 +20,16 @@ class Location:
     def __mul__(self, scalar: float) -> Location: ...
 
 
+class Vector3D:
+    x: float
+    y: float
+    z: float
+
+    def __init__(self, x: float = ..., y: float = ..., z: float = ...) -> None: ...
+    def __add__(self, other: Vector3D) -> Vector3D: ...
+    def __mul__(self, scalar: float) -> Vector3D: ...
+
+
 class Rotation:
     roll: float
     pitch: float
@@ -34,6 +44,14 @@ class Transform:
 
     def __init__(self, location: Location = ..., rotation: Rotation = ...) -> None: ...
     def get_forward_vector(self) -> Location: ...
+
+
+class BoundingBox:
+    location: Location
+    extent: Vector3D
+    rotation: Rotation
+
+    def get_world_vertices(self, transform: Transform) -> list[Location]: ...
 
 
 class Timestamp:
@@ -59,9 +77,11 @@ class Sensor(Actor):
 
 
 class Vehicle(Actor):
+    bounding_box: BoundingBox
+
     def apply_control(self, control: VehicleControl) -> None: ...
     def get_transform(self) -> Transform: ...
-    def get_velocity(self) -> Location: ...
+    def get_velocity(self) -> Vector3D: ...
 
 
 class Spectator(Actor):
